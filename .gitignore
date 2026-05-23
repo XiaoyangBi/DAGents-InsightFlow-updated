@@ -1,6 +1,11 @@
 # env
 *.env
 
+# personal 
+notice.md
+CLAUDE.md
+AGENTS.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
