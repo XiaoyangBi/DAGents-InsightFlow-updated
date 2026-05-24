@@ -4,6 +4,10 @@
 # test
 *.pytest_cache
 
+# claude
+.claude
+CLAUDE.md
+
 # personal 
 notice.md
 CLAUDE.md
