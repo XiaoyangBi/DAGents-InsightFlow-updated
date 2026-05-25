@@ -6,11 +6,9 @@ from app.db.session import get_async_session
 from app.dependencies import get_current_user
 from app.schemas.auth import UserResponse
 from app.schemas.interview import InterviewInput
-from app.services.interview_service import (
-    stream_interview_response,
-    get_message_history
-)
-from app.services.workflow_service import get_workflow_by_id, confirm_interview
+from app.db.queries.workflow_queries import get_workflow_by_id, get_message_history
+from app.services.interview_service import stream_interview_response
+from app.services.workflow_service import confirm_interview
 
 router = APIRouter(prefix="/workflows/{workflow_id}/interview", tags=["interview"])
 # api/v1/workflows/{workflow_id}/interview/history

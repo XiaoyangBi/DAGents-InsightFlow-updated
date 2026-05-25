@@ -3,14 +3,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_async_session
 from app.dependencies import get_current_user
 from app.schemas.auth import UserResponse
-from app.services.workflow_service import (
-    create_workflow,
-    get_workflow_by_id,
-    get_user_workflows,
-    start_workflow,
-    cancel_workflow,
-    delete_workflow,
-)
+from app.db.queries.workflow_queries import get_workflow_by_id, get_user_workflows
+from app.services.workflow_service import create_workflow, start_workflow, cancel_workflow, delete_workflow
 from app.core.workflow_executor import run_workflow
 
 

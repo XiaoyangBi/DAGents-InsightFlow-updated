@@ -1,13 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from app.db.session import get_async_session
 from app.dependencies import get_current_user
-from app.services.event_service import get_events, count_events
-from app.services.workflow_service import get_workflow_by_id
+from app.db.queries.event_queries import get_events, count_events, get_node_states
+from app.db.queries.workflow_queries import get_workflow_by_id
 from app.services.sse_service import sse_manager
-from app.db.models.workflow_node_state import WorkflowNodeState
 
 router = APIRouter(prefix="/workflows/{workflow_id}", tags=["events"])
 
@@ -74,12 +72,7 @@ async def list_node_states(
     workflow = await get_workflow_by_id(db, workflow_id, current_user.id)
     if not workflow:
         raise HTTPException(status_code=404, detail="工作流不存在")
-    result = await db.execute(
-        select(WorkflowNodeState)
-        .where(WorkflowNodeState.workflow_id == workflow.id)
-        .order_by(WorkflowNodeState.created_at)
-    )
-    states = result.scalars().all()
+    states = await get_node_states(db, workflow.id)
     return [
         {
             "id": str(s.id),

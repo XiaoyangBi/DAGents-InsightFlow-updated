@@ -1,9 +1,8 @@
 import uuid
 import logging
 from datetime import datetime, timezone
-from sqlalchemy import select
 from app.db.session import async_session_factory
-from app.db.models.workflow import Workflow
+from app.db.queries.workflow_queries import get_workflow_by_uuid
 from app.core.orchestrator import compile_workflow_graph
 from app.services.event_service import EventLogger
 from app.services.sse_service import sse_manager
@@ -15,8 +14,7 @@ logger = logging.getLogger(__name__)
 async def run_workflow(workflow_id: uuid.UUID) -> None:
     """BackgroundTasks 入口，运行完整 DAG。使用独立 DB session。"""
     async with async_session_factory() as db:
-        result = await db.execute(select(Workflow).where(Workflow.id == workflow_id))
-        workflow = result.scalar_one_or_none()
+        workflow = await get_workflow_by_uuid(db, workflow_id)
         if not workflow:
             logger.error(f"工作流 {workflow_id} 不存在")
             return
