@@ -7,8 +7,8 @@ from app.schemas.event import EventType
 
 
 class EventLogger:
-    """每个工作流执行实例化一个，管理事件写入和 seq 递增。"""
-
+    """每个工作流执行实例化一个，管理事件写入和 seq 递增。
+    """
     def __init__(
         self,
         db: AsyncSession,
@@ -20,6 +20,7 @@ class EventLogger:
     ):
         self.db = db
         self.workflow_id = workflow_id
+        self.execution_attempt = execution_attempt
         self.node_name = node_name
         self.iteration = iteration
         self._seq_state = seq_state if seq_state is not None else {"value": None}
