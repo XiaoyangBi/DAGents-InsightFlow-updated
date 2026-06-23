@@ -1,3 +1,4 @@
+import re
 import time
 from datetime import datetime
 
@@ -128,6 +129,14 @@ JSON schema:
 
 class AnalysisAgent(BaseAgent):
     node_name = "analysis"
+    POSITIONING_DIMENSIONS = {"目标用户", "使用场景", "核心问题", "解决方案", "支撑点", "市场定位"}
+    SENTIMENT_DIMENSIONS = {"用户反馈", "用户评价", "口碑反馈"}
+    GTM_DIMENSIONS = {"上市与增长", "增长", "渠道投放", "投放策略"}
+    PRICING_DIMENSIONS = {"定价", "定价策略", "价格体系", "商业模式", "收费方式", "套餐设计"}
+    POSITIONING_KEYWORDS = ("用户", "场景", "问题", "解决方案", "定位", "人群", "需求")
+    SENTIMENT_KEYWORDS = ("反馈", "评价", "口碑", "评论", "体验感受")
+    GTM_KEYWORDS = ("增长", "投放", "渠道", "上市", "内容", "文案", "传播", "获客", "转化", "品牌")
+    PRICING_KEYWORDS = ("定价", "价格", "收费", "套餐", "商业模式", "佣金", "费率", "手续费")
     SUBNODE_ARTIFACT_MAP = {
         "feature_analysis": {"feature_matrix"},
         "pricing_analysis": {"pricing_comparison"},
@@ -158,6 +167,20 @@ class AnalysisAgent(BaseAgent):
         )
 
         start = time.time()
+        if self._has_blocking_collection_gap(state, raw_data, products):
+            await self.emit_progress(
+                ctx,
+                stage="blocked_by_source_gap",
+                message="检测到结构性缺源，当前跳过分析产物生成，等待回退到 information_collection 重新采集。",
+                level="warning",
+            )
+            cleared_outputs = self._cleared_outputs()
+            return {
+                **cleared_outputs,
+                "analysis_modules": self._build_analysis_modules(cleared_outputs),
+                "current_phase": "analyzing",
+            }
+
         previous_outputs = self._existing_outputs(state)
 
         if llm_is_configured() and raw_data:
@@ -231,6 +254,32 @@ class AnalysisAgent(BaseAgent):
         if not requested_artifacts:
             return {
                 "analysis_modules": self._build_analysis_modules(self._existing_outputs(state)),
+                "current_phase": "analyzing",
+            }
+
+        config, target, competitors, competitor_groups, focus_dimensions, raw_data, products = self._analysis_inputs(state)
+        if self._has_blocking_collection_gap(state, raw_data, products):
+            await self.log_and_broadcast(ctx, EventType.NODE_START, {
+                "input_summary": {
+                    "phase": "analyzing",
+                    "node": ctx.node_id,
+                    "artifacts": list(requested_artifacts),
+                },
+            })
+            await self.emit_progress(
+                ctx,
+                stage="blocked_by_source_gap",
+                message=f"{ctx.node_id} 检测到结构性缺源，已跳过 artifact 生成并清空旧结果。",
+                level="warning",
+            )
+            outputs = self._cleared_outputs()
+            await self.log_and_broadcast(ctx, EventType.NODE_COMPLETE, {
+                "output_summary": {"blocked": True, "artifacts": list(requested_artifacts)},
+                "duration_ms": 0,
+            })
+            return {
+                **outputs,
+                "analysis_modules": self._build_analysis_modules(outputs),
                 "current_phase": "analyzing",
             }
 
@@ -557,7 +606,32 @@ class AnalysisAgent(BaseAgent):
             value = str(dimension).strip()
             if value and value not in normalized:
                 normalized.append(value)
-        return normalized or ["功能", "定价", "用户评价", "市场定位"]
+        filtered = [
+            dimension
+            for dimension in normalized
+            if AnalysisAgent._is_feature_like_dimension(dimension)
+        ]
+        return filtered or ["功能体验"]
+
+    @staticmethod
+    def _is_feature_like_dimension(dimension: str) -> bool:
+        value = str(dimension or "").strip()
+        if not value:
+            return False
+        if value in (
+            AnalysisAgent.POSITIONING_DIMENSIONS
+            | AnalysisAgent.SENTIMENT_DIMENSIONS
+            | AnalysisAgent.GTM_DIMENSIONS
+            | AnalysisAgent.PRICING_DIMENSIONS
+        ):
+            return False
+        keyword_groups = (
+            AnalysisAgent.POSITIONING_KEYWORDS,
+            AnalysisAgent.SENTIMENT_KEYWORDS,
+            AnalysisAgent.GTM_KEYWORDS,
+            AnalysisAgent.PRICING_KEYWORDS,
+        )
+        return not any(keyword in value for keywords in keyword_groups for keyword in keywords)
 
     @staticmethod
     def _sources_for_feature_dimension(sources_by_product, dimension: str) -> dict[str, list[dict]]:
@@ -696,6 +770,31 @@ class AnalysisAgent(BaseAgent):
             "gtm_analysis": state.get("gtm_analysis"),
         }
 
+    @staticmethod
+    def _cleared_outputs() -> dict:
+        return {
+            "feature_matrix": None,
+            "pricing_comparison": None,
+            "user_sentiment": None,
+            "positioning_analysis": None,
+            "swot": None,
+            "competitor_role_analysis": None,
+            "gtm_analysis": None,
+        }
+
+    @staticmethod
+    def _has_blocking_collection_gap(state: dict, raw_data: dict, products: list[str]) -> bool:
+        collection_errors = state.get("collection_errors") or {}
+        if not isinstance(collection_errors, dict):
+            collection_errors = {}
+        if collection_errors.get("__competitor_resolution__") or collection_errors.get("__source_coverage__"):
+            return True
+        if not products:
+            return True
+        if not isinstance(raw_data, dict):
+            return True
+        return sum(len(items) for items in raw_data.values() if isinstance(items, list)) == 0
+
     def _merge_outputs(self, previous_outputs: dict, fresh_outputs: dict, requested_artifacts: set[str]) -> dict:
         merged = dict(previous_outputs)
         for key, value in fresh_outputs.items():
@@ -809,7 +908,7 @@ class AnalysisAgent(BaseAgent):
             items.append(CompetitorRoleItem(
                 product=item.product,
                 role=role,
-                reason=item.reason,
+                reason=self._sanitize_role_reason(item.reason, item.product, role),
                 evidence_refs=item.evidence_refs,
                 confidence=item.confidence,
             ))
@@ -824,8 +923,48 @@ class AnalysisAgent(BaseAgent):
                 evidence_refs=[],
                 confidence=0.4,
             ))
-        summary = role_analysis.summary if role_analysis.summary else self._build_role_summary(items)
+        summary = (
+            self._sanitize_role_summary(role_analysis.summary)
+            if role_analysis.summary else self._build_role_summary(items)
+        )
         return CompetitorRoleAnalysis(items=items, summary=summary)
+
+    @staticmethod
+    def _role_label(role: str) -> str:
+        return {
+            "core": "核心竞品",
+            "benchmark": "标杆竞品",
+            "potential": "潜力竞品",
+            "substitute": "替代竞品",
+            "pitfall": "避坑竞品",
+            "unknown": "待确认角色",
+        }.get(role, role or "待确认角色")
+
+    def _sanitize_role_reason(self, reason: str, product: str, role: str) -> str:
+        text = str(reason or "").strip()
+        if not text:
+            return f"{product} 当前更接近{self._role_label(role)}，但仍需结合更完整的细分市场证据继续确认。"
+        text = re.sub(
+            r"^(?:基于\s*)?config\.competitor_groups[^。；]*[。；]\s*",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(r"^(?:根据|基于)?\s*预设角色标签[^。；]*[。；]\s*", "", text)
+        return text or f"{product} 当前更接近{self._role_label(role)}。"
+
+    def _sanitize_role_summary(self, summary: str) -> str:
+        text = str(summary or "").strip()
+        if not text:
+            return ""
+        text = re.sub(
+            r"^(?:基于\s*)?config\.competitor_groups[^。；]*[。；]\s*",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(r"^(?:根据|基于)?\s*预设角色标签[^。；]*[。；]\s*", "", text)
+        return text
 
     def _fallback_analysis(
         self,
@@ -841,7 +980,7 @@ class AnalysisAgent(BaseAgent):
             products = [p for p in competitors if p]
 
         matrix = []
-        for dimension in focus_dimensions or ["功能", "定价", "用户评价", "市场定位"]:
+        for dimension in self._feature_dimensions(focus_dimensions):
             comparisons = [
                 {
                     "product": product,

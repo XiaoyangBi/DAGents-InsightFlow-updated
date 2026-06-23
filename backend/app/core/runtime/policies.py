@@ -107,6 +107,15 @@ class ReviewFailPausePolicy:
 
     def apply_decision(self, state: dict, spec: NodeSpec, decision: dict) -> dict:
         action = decision.get("action")
+        if action == "jump":
+            data = self._cleanup_for_target_node(
+                dict(state.get("data") or {}),
+                decision.get("target_node") or "analysis",
+            )
+            control = dict(state.get("control") or {})
+            control["human_decision"] = decision
+            return {"data": data, "control": control, "decision": decision}
+
         if action not in {
             "drop_competitor",
             "keep_with_insufficient_evidence",
@@ -262,6 +271,52 @@ class ReviewFailPausePolicy:
         cleaned["review_result"] = None
         return cleaned
 
+    @staticmethod
+    def _cleanup_for_target_node(data: dict, target_node: str) -> dict:
+        cleaned = dict(data)
+        if target_node == "information_collection":
+            cleaned.update({
+                "raw_data": {},
+                "collection_errors": {},
+                "context_summaries": {},
+                "search_plan": {},
+                "search_coverage": {},
+                "search_per": {},
+                "feature_matrix": None,
+                "pricing_comparison": None,
+                "user_sentiment": None,
+                "positioning_analysis": None,
+                "swot": None,
+                "competitor_role_analysis": None,
+                "gtm_analysis": None,
+                "analysis_modules": {},
+                "report": None,
+                "review_result": None,
+                "current_phase": "collecting",
+            })
+            return cleaned
+        if target_node == "analysis":
+            cleaned.update({
+                "feature_matrix": None,
+                "pricing_comparison": None,
+                "user_sentiment": None,
+                "positioning_analysis": None,
+                "swot": None,
+                "competitor_role_analysis": None,
+                "gtm_analysis": None,
+                "analysis_modules": {},
+                "report": None,
+                "review_result": None,
+                "current_phase": "analyzing",
+            })
+            return cleaned
+        if target_node == "report_writing":
+            cleaned.update({
+                "report": None,
+                "review_result": None,
+            })
+        return cleaned
+
 
 class ReviewRoutePolicy:
     """质检节点路由策略。
@@ -279,6 +334,21 @@ class ReviewRoutePolicy:
     def decide(self, state: dict, spec: NodeSpec) -> ControlDecision:
         data = state.get("data") or {}
         control = state.get("control") or {}
+        human_decision = control.get("human_decision") or {}
+        if human_decision.get("action") in {
+            "jump",
+            "drop_competitor",
+            "keep_with_insufficient_evidence",
+            "replace_competitor",
+        }:
+            human_target = human_decision.get("target_node")
+            if human_target in spec.allowed_routes:
+                return ControlDecision(
+                    action="route",
+                    next_node=human_target,
+                    reason="human decision reroute",
+                )
+
         review = data.get("review_result")
         if not isinstance(review, dict):
             return ControlDecision(action="fail", reason="review node did not produce review_result")
@@ -291,7 +361,6 @@ class ReviewRoutePolicy:
         if revision_count >= max_revisions:
             return ControlDecision(action="fail", reason=review.get("feedback") or "review failed at max revisions")
 
-        human_decision = control.get("human_decision") or {}
         target = None
         if human_decision.get("action") in {
             "jump",

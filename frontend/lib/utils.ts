@@ -15,13 +15,13 @@ export function statusLabel(status: WorkflowStatus): string {
 
 export function statusColor(status: WorkflowStatus): string {
   const map: Record<WorkflowStatus, string> = {
-    created: "bg-zinc-500/10 text-zinc-400 border-zinc-500/20",
-    configuring: "bg-blue-500/10 text-blue-400 border-blue-500/20",
-    running: "bg-indigo-500/10 text-indigo-400 border-indigo-500/20",
-    paused: "bg-amber-500/10 text-amber-400 border-amber-500/20",
-    completed: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
-    failed: "bg-rose-500/10 text-rose-400 border-rose-500/20",
-    cancelled: "bg-zinc-500/10 text-zinc-400 border-zinc-500/20",
+    created: "border-[var(--border)] bg-[var(--bg-panel)] text-[var(--text-secondary)]",
+    configuring: "border-blue-500/20 bg-blue-500/10 text-blue-600 dark:text-blue-300",
+    running: "border-indigo-500/20 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300",
+    paused: "border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-300",
+    completed: "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300",
+    failed: "border-rose-500/20 bg-rose-500/10 text-rose-600 dark:text-rose-300",
+    cancelled: "border-[var(--border)] bg-[var(--bg-panel)] text-[var(--text-muted)]",
   };
   return map[status] || "";
 }

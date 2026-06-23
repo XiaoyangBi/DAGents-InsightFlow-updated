@@ -3,9 +3,9 @@ import json
 import logging
 import re
 import uuid
-from typing import List, AsyncGenerator, Callable
+from typing import List, AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
 from tavily import AsyncTavilyClient
 from app.config import get_settings
 from app.db.models.workflow import InterviewMessageModel
@@ -25,7 +25,6 @@ CONFIG_UPDATED_FALLBACK = "配置已更新。请确认是否可以开始分析�
 CONFIG_COMPLETE_FALLBACK = "配置已确认完成，可以开始竞品分析。"
 
 _tavily_client: AsyncTavilyClient | None = None
-_interview_agent: InterviewAgent | None = None
 
 
 def _get_tavily_client() -> AsyncTavilyClient:
@@ -35,11 +34,27 @@ def _get_tavily_client() -> AsyncTavilyClient:
     return _tavily_client
 
 
-def _get_interview_agent() -> InterviewAgent:
-    global _interview_agent
-    if _interview_agent is None:
-        _interview_agent = InterviewAgent()
-    return _interview_agent
+def _get_interview_agent(*, thinking_enabled: bool = False) -> InterviewAgent:
+    return InterviewAgent(thinking_enabled=thinking_enabled)
+
+
+def _build_analysis_preferences_context(analysis_preferences: dict | None) -> str | None:
+    if not isinstance(analysis_preferences, dict):
+        return None
+    fields = {
+        "报告语言": analysis_preferences.get("reportLanguage"),
+        "分析深度": analysis_preferences.get("analysisDepth"),
+        "竞品数量偏好": analysis_preferences.get("competitorCount"),
+        "输出重点": analysis_preferences.get("outputFocus"),
+        "报告风格": analysis_preferences.get("reportStyle"),
+    }
+    parts = [f"{label}: {value}" for label, value in fields.items() if value not in (None, "", [])]
+    if not parts:
+        return None
+    return (
+        "当前用户的分析偏好如下，请在访谈中用作推荐竞品与收敛分析目标的依据，"
+        "尤其是在用户不知道该看哪些竞品时：\n- " + "\n- ".join(parts)
+    )
 
 
 def convert_to_langchain_messages(history: List[InterviewMessageModel]) -> List[BaseMessage]:
@@ -159,13 +174,13 @@ def merge_competitor_groups(config, suggested: list[str]) -> None:
 
 async def _collect_interview_response(
     messages: List[BaseMessage],
-    agent_factory: Callable[[], InterviewAgent] = _get_interview_agent,
+    agent: InterviewAgent,
 ) -> str:
     """Collect an interview reply, retrying once when the provider returns no text."""
     for attempt in range(2):
         chunks: list[str] = []
         async with asyncio.timeout(INTERVIEW_RESPONSE_TIMEOUT_SECONDS):
-            async for chunk in agent_factory().stream_response(messages):
+            async for chunk in agent.stream_response(messages):
                 chunks.append(chunk)
         response = "".join(chunks)
         if response.strip():
@@ -190,7 +205,10 @@ def _clean_interview_response(full_response: str, *, has_config: bool, is_comple
 async def stream_interview_response(
     db: AsyncSession,
     workflow_id: uuid.UUID,
-    user_message: str
+    user_message: str,
+    *,
+    thinking_enabled: bool = False,
+    analysis_preferences: dict | None = None,
 ) -> AsyncGenerator[str, None]:
     """处理用户消息 → 保存 → 请求 LLM → 积攒 → 提取配置 → 清洗 → 回放 → META。
 
@@ -211,11 +229,15 @@ async def stream_interview_response(
     await save_message(db, workflow_id, "user", user_message)
     history = await get_message_history(db, workflow_id)
     lc_messages = convert_to_langchain_messages(history)
+    preferences_context = _build_analysis_preferences_context(analysis_preferences)
+    if preferences_context:
+        lc_messages = [SystemMessage(content=preferences_context), *lc_messages]
 
-    full_response = await _collect_interview_response(lc_messages)
+    agent = _get_interview_agent(thinking_enabled=thinking_enabled)
+    full_response = await _collect_interview_response(lc_messages, agent)
 
     # -- Phase B: 提取 & 补全 config ----------------------------------------
-    config = _get_interview_agent().try_extract_config(full_response)
+    config = agent.try_extract_config(full_response)
     is_complete = _should_mark_complete(full_response, history, user_message)
 
     if config:

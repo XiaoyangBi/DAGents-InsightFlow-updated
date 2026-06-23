@@ -32,7 +32,7 @@ export function WorkflowCard({ workflow }: Props) {
     <>
       <div
         onClick={() => router.push(`/workflows/${workflow.id}`)}
-        className="group cursor-pointer rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-5 transition-all duration-300 hover:-translate-y-1 hover:border-emerald-500/30"
+        className="group cursor-pointer rounded-[24px] border border-[var(--border)] bg-[var(--bg-card)] p-5 backdrop-blur-md transition-all duration-300 hover:-translate-y-1 hover:border-[var(--border-strong)]"
         style={{ boxShadow: "var(--card-shadow)" }}
         onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "var(--card-shadow-hover)"; }}
         onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "var(--card-shadow)"; }}
@@ -48,13 +48,13 @@ export function WorkflowCard({ workflow }: Props) {
           </div>
           <button
             onClick={(e) => { e.stopPropagation(); setShowConfirm(true); }}
-            className="shrink-0 ml-2 p-1 rounded-md text-[var(--text-muted)] hover:text-rose-400 hover:bg-rose-500/10 opacity-0 group-hover:opacity-100 transition-all"
+            className="ml-2 shrink-0 rounded-lg p-1 text-[var(--text-muted)] opacity-0 transition-all group-hover:opacity-100 hover:bg-rose-500/10 hover:text-rose-400"
           >
             <XCircle size={13} />
           </button>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 border-t border-[var(--border)] pt-3">
           <span className="relative flex h-2 w-2">
             {isRunning && (
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
@@ -64,7 +64,7 @@ export function WorkflowCard({ workflow }: Props) {
                 isRunning ? "bg-emerald-400" :
                 workflow.status === "completed" ? "bg-emerald-500" :
                 workflow.status === "failed" ? "bg-rose-500" :
-                "bg-zinc-500"
+                "bg-[var(--text-muted)]"
               }`}
             />
           </span>
@@ -76,7 +76,7 @@ export function WorkflowCard({ workflow }: Props) {
             {statusLabel(workflow.status)}
           </span>
           {workflow.status === "running" && (
-            <span className="text-xs text-[var(--text-muted)] ml-auto">
+            <span className="ml-auto rounded-full bg-[var(--bg-panel)] px-2 py-1 text-[11px] text-[var(--text-muted)]">
               {workflow.current_phase}
             </span>
           )}

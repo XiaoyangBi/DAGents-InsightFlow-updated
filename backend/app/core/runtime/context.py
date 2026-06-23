@@ -95,6 +95,9 @@ class AgentContext:
         events:      Agent 对外的事件发射器
         llm:         预留的 LLM 客户端（ChatOpenAI 等）
         tools:       预留的工具绑定列表
+        memory_context: 当前节点可见的长期记忆上下文
+        rag_context:    当前节点可见的检索证据上下文
+        context_trace:  本次上下文装配的元信息与 trace
     """
 
     workflow_id: uuid.UUID
@@ -104,3 +107,6 @@ class AgentContext:
     events: EventSink
     llm: Any = None
     tools: Any = None
+    memory_context: dict | None = None
+    rag_context: dict | None = None
+    context_trace: dict | None = None

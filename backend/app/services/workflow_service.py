@@ -1,7 +1,9 @@
 import uuid
+from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 from app.db.models.workflow import Workflow
+from app.db.models.workflow_run import WorkflowRun
 from app.db.queries.workflow_queries import get_workflow_by_id
 from app.exceptions import WorkflowNotFoundError, InvalidStateTransitionError, ConfigIncompleteError
 from app.schemas.workflow import WorkflowConfig
@@ -165,6 +167,16 @@ async def cancel_workflow(db: AsyncSession, workflow_id: str, owner_id: uuid.UUI
     if workflow.status in ("completed", "cancelled"):
         raise InvalidStateTransitionError(workflow_id, workflow.status, "cancel")
     workflow.status = "cancelled"
+    workflow.current_phase = "done"
+    workflow.pause_state = None
+    workflow.completed_at = datetime.now(timezone.utc)
+    workflow.error_message = "用户手动停止生成"
+    if workflow.current_run_id:
+        run = await db.get(WorkflowRun, workflow.current_run_id)
+        if run:
+            run.status = "cancelled"
+            run.completed_at = datetime.now(timezone.utc)
+            run.error_message = workflow.error_message
     await db.commit()
     await db.refresh(workflow)
     return workflow

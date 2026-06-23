@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.context.assembler import ContextAssembler
 from app.core.runtime.retry import NodeFatalError, execute_with_retry
 
 try:
@@ -75,12 +76,14 @@ class NodeRunner:
         run_id: uuid.UUID,
         execution_attempt: int,
         event_logger: EventLogger,
+        context_assembler: ContextAssembler | None = None,
     ):
         self.db = db
         self.workflow_id = workflow_id
         self.run_id = run_id
         self.execution_attempt = execution_attempt
         self.event_logger = event_logger
+        self.context_assembler = context_assembler or ContextAssembler()
 
     @traceable(run_type="chain", name="node_execution")
     async def run(self, spec: NodeSpec, state: dict) -> dict:
@@ -105,6 +108,17 @@ class NodeRunner:
         control = dict(state.get("control") or {})
         runtime = dict(state.get("runtime") or {})
         iteration = int(control.get("revision_count", data.get("revision_count", 0)) or 0)
+        context_bundle = await self.context_assembler.build_context(
+            workflow_id=self.workflow_id,
+            run_id=self.run_id,
+            node_id=spec.id,
+            iteration=iteration,
+            state=data,
+        )
+        data["memory_context"] = context_bundle.memory_context
+        data["rag_context"] = context_bundle.rag_context
+        data["context_trace"] = context_bundle.context_trace
+        runtime["context_trace"] = context_bundle.context_trace
         node_logger = self.event_logger.with_node(spec.id, iteration)
         ctx = AgentContext(
             workflow_id=self.workflow_id,
@@ -112,6 +126,9 @@ class NodeRunner:
             node_id=spec.id,
             iteration=iteration,
             events=EventSink(node_logger, self.workflow_id, spec.id),
+            memory_context=context_bundle.memory_context,
+            rag_context=context_bundle.rag_context,
+            context_trace=context_bundle.context_trace,
         )
         start = time.time()
 

@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import Image from "next/image";
 import { useParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/lib/auth-context";
-import { useWorkflow, useStartWorkflow } from "@/lib/use-workflow";
+import { useWorkflow, useStartWorkflow, useRetryNode, useCancelWorkflow } from "@/lib/use-workflow";
 import { useInterviewHistory } from "@/lib/use-interview";
 import { useArtifacts } from "@/lib/use-artifacts";
 import { useTraceLinks } from "@/lib/use-trace";
@@ -31,9 +32,11 @@ import { PricingTable } from "@/components/report/pricing-table";
 import { SentimentPanel } from "@/components/report/sentiment-panel";
 import { CompetitorRoleCard } from "@/components/report/competitor-role-card";
 import { RevisionTimeline } from "@/components/report/revision-timeline";
-import { Send, ArrowLeft, Layers, FileText, Sparkles, Pencil, MessageSquare, Network, Download, Printer } from "lucide-react";
+import { Send, Square, ArrowLeft, Layers, FileText, Pencil, MessageSquare, Network, Download, Printer, RefreshCcw } from "lucide-react";
 import Link from "next/link";
 import { statusLabel, statusColor } from "@/lib/utils";
+import { applyPreferencesToConfig, readAnalysisPreferences } from "@/lib/analysis-preferences";
+import { deriveInterviewInsights, persistInterviewInsights } from "@/lib/interview-insights";
 import type { InterviewMessage } from "@/types/interview";
 import type { CompetitorGroups, WorkflowConfig, WorkflowDetail } from "@/types/workflow";
 import type { WorkflowEvent, AgentNodeName } from "@/types/event";
@@ -85,7 +88,7 @@ export default function WorkflowStudioPage() {
   return (
     <AuthGuard>
       <div className="min-h-screen" style={{ backgroundColor: "var(--bg-primary)" }}>
-        <Header workflow={workflow} displayTitle={displayTitle} onTitleChange={(newTitle) => {
+        <Header workflow={workflow} workflowId={id} displayTitle={displayTitle} onTitleChange={(newTitle) => {
           setTitleOverride(newTitle);
           qc.setQueryData<WorkflowDetail | undefined>(["workflow", id], (old) =>
             old ? { ...old, title: newTitle } : old
@@ -121,10 +124,12 @@ export default function WorkflowStudioPage() {
   );
 }
 
-function Header({ workflow, displayTitle, onTitleChange }: { workflow: { id?: string; title?: string; status?: string; current_phase?: string; revision_count?: number } | undefined; displayTitle?: string; onTitleChange?: (title: string) => void }) {
+function Header({ workflow, workflowId, displayTitle, onTitleChange }: { workflow: { id?: string; title?: string; status?: string; current_phase?: string; revision_count?: number } | undefined; workflowId: string; displayTitle?: string; onTitleChange?: (title: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(displayTitle || workflow?.title || "未命名分析");
+  const cancelMutation = useCancelWorkflow();
   const title = displayTitle || workflow?.title || "未命名分析";
+  const canCancel = workflow?.status === "running" || workflow?.status === "paused";
 
   useEffect(() => {
     if (!editing) setDraftTitle(displayTitle || workflow?.title || "未命名分析");
@@ -136,6 +141,16 @@ function Header({ workflow, displayTitle, onTitleChange }: { workflow: { id?: st
       onTitleChange?.(trimmed);
     }
     setEditing(false);
+  };
+
+  const handleCancel = async () => {
+    if (!canCancel || cancelMutation.isPending) return;
+    if (!window.confirm("确定要停止当前生成吗？这会把工作流标记为已取消。")) return;
+    try {
+      await cancelMutation.mutateAsync({ workflowId });
+    } catch {
+      // 错误由 mutation 状态处理，避免打断页头交互
+    }
   };
 
   return (
@@ -166,8 +181,22 @@ function Header({ workflow, displayTitle, onTitleChange }: { workflow: { id?: st
             </Badge>
           )}
         </div>
-        <div className="text-xs text-[var(--text-muted)]">
-          {workflow?.revision_count != null && `Revision ${workflow.revision_count}`}
+        <div className="flex items-center gap-3">
+          {canCancel && (
+            <Button
+              type="button"
+              size="sm"
+              variant="destructive"
+              onClick={handleCancel}
+              disabled={cancelMutation.isPending}
+            >
+              <Square size={13} />
+              {cancelMutation.isPending ? "停止中..." : "停止生成"}
+            </Button>
+          )}
+          <div className="text-xs text-[var(--text-muted)]">
+            {workflow?.revision_count != null && `Revision ${workflow.revision_count}`}
+          </div>
         </div>
       </div>
     </header>
@@ -176,13 +205,15 @@ function Header({ workflow, displayTitle, onTitleChange }: { workflow: { id?: st
 
 /* ─── Interview View ─── */
 const QUICK_CARDS = [
-  { title: "分析一个产品的主要竞品", content: "例如：分析抖音的主要竞品" },
-  { title: "对比多个竞品", content: "例如：抖音、快手、小红书对比分析" },
-  { title: "发现市场机会", content: "例如：短视频赛道还有哪些空白机会" },
+  { title: "我知道要调研哪些竞品", content: "例如：想分析 Notion、Confluence、ClickUp" },
+  { title: "我还不知道该看哪些竞品", content: "例如：我想搞明白协作工具还有哪些机会" },
+  { title: "我想先明确要解决的问题", content: "例如：我要验证新功能方向是否值得做" },
 ];
 
 function InterviewView({ workflowId, token, workflow }: { workflowId: string; token: string; workflow: WorkflowDetail }) {
   const qc = useQueryClient();
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const resizingRef = useRef(false);
   const [config, setConfig] = useState<Partial<WorkflowConfig>>(() => {
     const sc = workflow.config as Partial<WorkflowConfig> | undefined;
     return sc && Object.keys(sc).length > 0 ? { ...sc } : {};
@@ -201,10 +232,13 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
   const [inputValue, setInputValue] = useState("");
   const [newCompetitor, setNewCompetitor] = useState("");
   const [startError, setStartError] = useState<string | null>(null);
-  const { sendMessage, isStreaming } = useInterviewStream({ workflowId, token });
+  const [rightPanelWidth, setRightPanelWidth] = useState(420);
+  const [thinkingEnabled, setThinkingEnabled] = useState(false);
+  const { sendMessage, cancel, isStreaming } = useInterviewStream({ workflowId, token });
   const startMutation = useStartWorkflow();
   const { data: history, isLoading: historyLoading, isPending: historyPending } = useInterviewHistory(workflowId);
   const isTerminalView = workflow.status === "completed" || workflow.status === "failed" || workflow.status === "cancelled";
+  const canUseThinking = !isTerminalView;
 
   // 终端状态的工作流始终视为有消息，避免闪回首页欢迎界面
   const hasMessages = isTerminalView || (!historyPending && (messages.length > 0 || (!!history && history.length > 0)));
@@ -219,6 +253,7 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
   }, [history]);
 
   const canStart = Boolean(config.target_product && config.product_category);
+  const interviewInsights = useMemo(() => deriveInterviewInsights(config), [config]);
 
   const normalizeNames = useCallback((names: string[]) => {
     const seen = new Set<string>();
@@ -260,12 +295,15 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
 
   const sendUserMessage = (text: string) => {
     if (!text.trim() || isStreaming) return;
+    const analysisPreferences = readAnalysisPreferences();
     const userMsg: InterviewMessage = { role: "user", content: text, created_at: new Date().toISOString() };
     setMessages((prev) => [...prev, userMsg, { role: "assistant", content: "", created_at: new Date().toISOString() }]);
     setInputValue("");
 
     sendMessage(
       userMsg.content,
+      thinkingEnabled && canUseThinking,
+      analysisPreferences,
       (tokenStr) => {
         setMessages((prev) => {
           const updated = [...prev];
@@ -325,9 +363,11 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
 
   const handleStart = async () => {
     setStartError(null);
-    if (!canStart) { setStartError("配置不完整：target_product 和 product_category 必填"); return; }
+    if (!canStart) { setStartError("配置不完整：你的产品名称和产品品类必填"); return; }
     try {
-      await startMutation.mutateAsync({ id: workflowId, config });
+      const effectiveConfig = applyPreferencesToConfig(config, readAnalysisPreferences());
+      setConfig(effectiveConfig);
+      await startMutation.mutateAsync({ id: workflowId, config: effectiveConfig });
     } catch (err) {
       const detail = (err as { response?: { data?: { detail?: string; message?: string } } })?.response?.data?.detail
         || (err as { response?: { data?: { detail?: string; message?: string } } })?.response?.data?.message
@@ -347,21 +387,86 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
       .catch(() => {});
   }, [isComplete, canStart, workflowId, token]);
 
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("workflow_config_panel_width");
+      if (!raw) return;
+      const saved = Number(raw);
+      if (!Number.isNaN(saved)) {
+        setRightPanelWidth(Math.min(640, Math.max(320, saved)));
+      }
+    } catch {
+      // ignore invalid width
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("workflow_config_panel_width", String(rightPanelWidth));
+  }, [rightPanelWidth]);
+
+  useEffect(() => {
+    persistInterviewInsights(workflowId, config);
+  }, [workflowId, config]);
+
+  const startResizing = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    resizingRef.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, []);
+
+  useEffect(() => {
+    const handleMove = (event: MouseEvent) => {
+      if (!resizingRef.current || !layoutRef.current) return;
+      const bounds = layoutRef.current.getBoundingClientRect();
+      const nextWidth = bounds.right - event.clientX;
+      const maxWidth = Math.min(680, bounds.width * 0.5);
+      const clamped = Math.min(maxWidth, Math.max(320, nextWidth));
+      setRightPanelWidth(clamped);
+    };
+
+    const handleUp = () => {
+      if (!resizingRef.current) return;
+      resizingRef.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, []);
+
   return (
-    <div className="flex h-full" style={{ backgroundColor: "var(--bg-primary)" }}>
+    <div ref={layoutRef} className="flex h-full" style={{ backgroundColor: "var(--bg-primary)" }}>
       {/* ── Left: Chat Area ── */}
-      <div className="flex flex-col w-[65%] border-r border-[var(--border)]" style={{ backgroundColor: "var(--bg-primary)" }}>
+      <div className="flex min-w-0 flex-1 flex-col border-r border-[var(--border)]" style={{ backgroundColor: "var(--bg-primary)" }}>
         {!hasMessages && !historyLoading && !historyPending ? (
           /* ── INIT: Welcome ── */
           <div className="flex-1 flex flex-col items-center justify-center px-6 overflow-y-auto">
             <div className="max-w-lg w-full space-y-6 text-center">
-              <Sparkles size={36} className="mx-auto text-emerald-400" />
+              <div className="mx-auto flex h-14 w-14 items-center justify-center overflow-hidden rounded-[20px] border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
+                <Image
+                  src="/insightflow-mark.svg"
+                  alt="DAGents-InsightFlow"
+                  width={56}
+                  height={56}
+                  className="h-14 w-14"
+                  priority
+                />
+              </div>
               <div>
-                <h2 className="text-xl md:text-2xl font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-                  开始一次竞品分析
+                <h2 className="text-xl font-semibold text-[var(--text-primary)] md:text-2xl" data-display="true">
+                  开始一次竞品调研
                 </h2>
-                <p className="text-sm text-slate-500 mt-2 leading-relaxed">
-                  通过自然对话描述你的分析需求，AI 将自动配置分析流程并同步更新右侧看板。
+                <p className="mt-2 text-sm leading-relaxed text-[var(--text-secondary)]">
+                  先说你想调研哪些竞品；如果你还不知道，直接说你想先搞明白什么问题，Agent 会结合你的分析偏好帮你收敛候选对象。
                 </p>
               </div>
               <div className="grid grid-cols-1 gap-3 w-full">
@@ -369,10 +474,10 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
                   <button
                     key={i}
                     onClick={() => sendUserMessage(card.title)}
-                    className="text-left rounded-2xl border border-slate-200 dark:border-zinc-700/50 bg-white dark:bg-zinc-900/50 shadow-sm hover:-translate-y-0.5 hover:border-blue-500/30 hover:bg-blue-50/10 dark:hover:bg-blue-500/5 transition-all cursor-pointer p-4"
+                    className="cursor-pointer rounded-[22px] border border-[var(--border)] bg-[var(--bg-card)] p-4 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-[var(--border-strong)] hover:bg-[var(--bg-panel)]"
                   >
-                    <p className="text-sm font-medium text-slate-800 dark:text-zinc-200">{card.title}</p>
-                    <p className="text-xs text-slate-500 mt-1">{card.content}</p>
+                    <p className="text-sm font-medium text-[var(--text-primary)]">{card.title}</p>
+                    <p className="mt-1 text-xs text-[var(--text-secondary)]">{card.content}</p>
                   </button>
                 ))}
               </div>
@@ -385,38 +490,114 @@ function InterviewView({ workflowId, token, workflow }: { workflowId: string; to
           </div>
         ) : (
           /* ── ACTIVE: Chat Stream ── */
-          <ChatStream messages={displayMessages} isStreaming={isStreaming} onQuickReply={handleQuickReply} />
+          <ChatStream
+            messages={displayMessages}
+            isStreaming={isStreaming}
+            enableQuickReply={!isComplete}
+            onQuickReply={handleQuickReply}
+          />
         )}
 
         {/* ── Chat Input Bar ── */}
-        <div className="p-4 border-t border-[var(--border)]">
-          <div className="flex gap-2 max-w-4xl mx-auto">
-            <textarea
-              value={inputValue}
-              onChange={(e) => {
-                setInputValue(e.target.value);
-                e.target.style.height = "auto";
-                e.target.style.height = Math.min(e.target.scrollHeight, 192) + "px";
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
-              }}
-              placeholder={isStreaming ? "AI 正在回复中..." : "输入想分析的产品、竞品范围，或直接点击上方推荐场景..."}
-              disabled={isStreaming}
-              rows={1}
-              className="flex-1 resize-none rounded-2xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900/50 px-4 py-2.5 text-sm text-slate-800 dark:text-zinc-200 placeholder:text-slate-400 dark:placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:border-blue-500/40 disabled:opacity-50 shadow-sm transition-all"
-            />
-            <Button onClick={handleSend} disabled={isStreaming || !inputValue.trim()} variant="primary" size="icon" className="rounded-xl">
-              <Send size={16} />
-            </Button>
+        <div className="border-t border-[var(--border)] px-4 py-4">
+          <div className="w-full rounded-[24px] border border-[var(--border)] bg-[var(--bg-card)]/92 p-3 shadow-[var(--card-shadow)] backdrop-blur-xl">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center rounded-full border border-[var(--border)] bg-[var(--bg-panel)] px-2.5 py-1 text-[10px] font-medium text-[var(--text-secondary)]">
+                Enter 发送
+                </span>
+                <span className="inline-flex items-center rounded-full border border-[var(--border)] bg-[var(--bg-panel)] px-2.5 py-1 text-[10px] font-medium text-[var(--text-muted)]">
+                Shift + Enter 换行
+                </span>
+                <span className="text-[11px] text-[var(--text-muted)]">
+                  {isStreaming
+                    ? "继续输入会停止当前回复，并切到新的提问。"
+                    : "描述你的产品、竞品边界或调研目标，右侧看板会同步更新。"}
+                </span>
+              </div>
+              <button
+                type="button"
+                disabled={!canUseThinking}
+                onClick={() => canUseThinking && setThinkingEnabled((prev) => !prev)}
+                className={`inline-flex items-center rounded-full border px-3 py-1.5 text-[11px] font-medium transition-all ${
+                  thinkingEnabled && canUseThinking
+                    ? "border-emerald-400/40 bg-emerald-500/12 text-emerald-300 shadow-[0_0_24px_rgba(16,185,129,0.16)]"
+                    : "border-[var(--border)] bg-[var(--bg-panel)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                } ${!canUseThinking ? "cursor-not-allowed opacity-50" : ""}`}
+                aria-pressed={thinkingEnabled && canUseThinking}
+                title={canUseThinking ? "切换 Thinking 模式" : "只有访谈阶段可以开启 Thinking 模式"}
+              >
+                {thinkingEnabled && canUseThinking ? "Thinking On" : "Quick Reply"}
+              </button>
+            </div>
+
+            <div className="flex items-end gap-2">
+              <textarea
+                value={inputValue}
+                onChange={(e) => {
+                  if (isStreaming) cancel();
+                  setInputValue(e.target.value);
+                  e.target.style.height = "auto";
+                  e.target.style.height = Math.min(e.target.scrollHeight, 144) + "px";
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+                }}
+                placeholder={
+                  isStreaming
+                    ? "继续输入会停止当前回复，并切换到新的问题..."
+                    : "例如：我们的产品是飞书，想调研 Notion、Slack 的协作体验和商业化差异"
+                }
+                rows={1}
+                className="min-h-[60px] max-h-[144px] flex-1 resize-none rounded-[18px] border border-[var(--border)] bg-[var(--bg-panel)] px-4 py-3 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] transition-all hover:border-[var(--border-strong)] focus-visible:border-[var(--accent)] focus-visible:outline-none focus-visible:ring-[var(--focus-ring)]"
+              />
+              <Button
+                onClick={isStreaming ? cancel : handleSend}
+                disabled={isStreaming ? false : !inputValue.trim()}
+                variant="primary"
+                className="h-[60px] min-w-[88px] rounded-[18px] shrink-0 flex-col gap-1.5"
+              >
+                {isStreaming ? <Square size={16} className="fill-[#04111c] text-[#04111c]" /> : <Send size={18} />}
+                <span className="text-xs font-semibold">{isStreaming ? "停止" : "发送"}</span>
+              </Button>
+            </div>
+
+            <div className="mt-3 flex items-center justify-between gap-3 text-[11px] text-[var(--text-muted)]">
+              <span>
+                {thinkingEnabled && canUseThinking
+                  ? "Thinking 已开启：访谈会更偏推理追问。"
+                  : "Quick Reply：访谈会更偏快速确认。"}
+              </span>
+              {!canUseThinking && (
+                <span className="hidden rounded-full border border-[var(--border)] bg-[var(--bg-panel)] px-2.5 py-1 md:inline-flex">
+                  Thinking 仅限访谈阶段
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
+      <button
+        type="button"
+        aria-label="调整配置看板宽度"
+        title="拖拽调整配置看板宽度"
+        onMouseDown={startResizing}
+        onDoubleClick={() => setRightPanelWidth(420)}
+        className="group relative hidden w-3 shrink-0 cursor-col-resize bg-transparent md:block"
+      >
+        <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[var(--border)] transition-colors group-hover:bg-[var(--accent)]" />
+        <span className="absolute left-1/2 top-1/2 h-12 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--bg-elevated)] opacity-0 transition-opacity group-hover:opacity-100" />
+      </button>
+
       {/* ── Right: Config Panel ── */}
-      <div className="w-[35%] p-5 backdrop-blur-xl bg-[var(--bg-primary)]/60 border-l border-[var(--border)]">
+      <div
+        className="shrink-0 border-l border-[var(--border)] bg-[var(--bg-primary)]/60 p-5 backdrop-blur-xl"
+        style={{ width: `${rightPanelWidth}px` }}
+      >
         <ConfigPanel
           config={config} isComplete={isComplete} isStarting={startMutation.isPending}
+          interviewInsights={interviewInsights}
           newCompetitor={newCompetitor} canStart={canStart} startError={startError}
           onNewCompetitorChange={setNewCompetitor}
           onAddCompetitor={() => {
@@ -462,8 +643,11 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
     }, {} as Record<AgentNodeName, { status: NodeStatus; message?: string; duration_ms?: number }>);
 
   const qc = useQueryClient();
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const resizingRef = useRef(false);
   const isPaused = workflow.status === "paused";
   const executionAttempt = workflow.execution_attempt;
+  const [rightPanelWidth, setRightPanelWidth] = useState(720);
   const [nodeStates, setNodeStates] = useState<
     Record<AgentNodeName, { status: NodeStatus; message?: string; duration_ms?: number }>
   >(createEmptyNodeStates);
@@ -786,8 +970,60 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
     onEvent: handleEvent,
   });
 
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("workflow_runtime_panel_width");
+      if (!raw) return;
+      const saved = Number(raw);
+      if (!Number.isNaN(saved)) {
+        setRightPanelWidth(Math.min(920, Math.max(440, saved)));
+      }
+    } catch {
+      // ignore invalid width
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("workflow_runtime_panel_width", String(rightPanelWidth));
+  }, [rightPanelWidth]);
+
+  const startResizing = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    resizingRef.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, []);
+
+  useEffect(() => {
+    const handleMove = (event: MouseEvent) => {
+      if (!resizingRef.current || !layoutRef.current) return;
+      const bounds = layoutRef.current.getBoundingClientRect();
+      const nextWidth = bounds.right - event.clientX;
+      const maxWidth = Math.min(980, bounds.width * 0.58);
+      const clamped = Math.min(maxWidth, Math.max(440, nextWidth));
+      setRightPanelWidth(clamped);
+    };
+
+    const handleUp = () => {
+      if (!resizingRef.current) return;
+      resizingRef.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, []);
+
   return (
-    <div className="flex h-full" style={{ backgroundColor: "var(--bg-primary)" }}>
+    <div ref={layoutRef} className="flex h-full" style={{ backgroundColor: "var(--bg-primary)" }}>
       {/* Left: DAG Canvas + Dialog Input */}
       <div className="flex-1 flex flex-col p-4 gap-3 min-w-0">
         <div className="flex items-center gap-2 shrink-0">
@@ -887,8 +1123,23 @@ function DagRuntimeView({ workflowId, token, workflow }: { workflowId: string; t
         )}
       </div>
 
+      <button
+        type="button"
+        aria-label="调整运行态事件面板宽度"
+        title="拖拽调整运行态事件面板宽度"
+        onMouseDown={startResizing}
+        onDoubleClick={() => setRightPanelWidth(720)}
+        className="group relative hidden w-3 shrink-0 cursor-col-resize bg-transparent md:block"
+      >
+        <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[var(--border)] transition-colors group-hover:bg-[var(--accent)]" />
+        <span className="absolute left-1/2 top-1/2 h-12 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--bg-elevated)] opacity-0 transition-opacity group-hover:opacity-100" />
+      </button>
+
       {/* Right: Node process panel */}
-      <div className="w-[720px] border-l border-[var(--border)] flex flex-col min-h-0" style={{ backgroundColor: "var(--bg-primary)" }}>
+      <div
+        className="shrink-0 border-l border-[var(--border)] flex min-h-0 flex-col"
+        style={{ width: `${rightPanelWidth}px`, backgroundColor: "var(--bg-primary)" }}
+      >
         <div className={`${SHOW_DEBUG_EVENTS ? "flex-[0_0_58%]" : "flex-1"} min-h-0 flex flex-col`}>
           <div className="px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-elevated)]">
             <span className="text-xs font-medium text-[var(--text-primary)]">节点过程叙述</span>
@@ -971,6 +1222,30 @@ function filterTargetFromSentimentArtifact(data: UserSentimentAnalysis | undefin
 
 function TerminalTabs({ workflowId, token, workflow }: { workflowId: string; token: string; workflow: WorkflowDetail }) {
   const [tab, setTab] = useState<TerminalTab>("report");
+  const retryMutation = useRetryNode();
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  const retryNode = useMemo(() => {
+    switch (workflow.current_phase) {
+      case "collecting":
+        return "information_collection";
+      case "reviewing":
+        return "review";
+      case "writing":
+        return "report_writing";
+      default:
+        return "analysis";
+    }
+  }, [workflow.current_phase]);
+
+  const handleRetry = async () => {
+    setRetryError(null);
+    try {
+      await retryMutation.mutateAsync({ workflowId, node: retryNode });
+    } catch (err) {
+      setRetryError((err as Error).message || "重新生成失败");
+    }
+  };
 
   const tabs: { key: TerminalTab; label: string; icon: React.ReactNode }[] = [
     { key: "interview", label: "需求访谈", icon: <MessageSquare size={14} /> },
@@ -980,6 +1255,28 @@ function TerminalTabs({ workflowId, token, workflow }: { workflowId: string; tok
 
   return (
     <div className="flex flex-col h-[calc(100vh-57px)]">
+      {workflow.status === "failed" && (
+        <div className="flex items-center justify-between gap-3 border-b border-rose-500/20 bg-rose-500/8 px-6 py-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-rose-300">本次工作流执行失败</p>
+            <p className="mt-1 text-xs text-[var(--text-secondary)]">
+              {workflow.error_message || "可基于当前配置重新生成一轮新的执行。"}
+            </p>
+            {retryError && <p className="mt-1 text-xs text-rose-400">{retryError}</p>}
+          </div>
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
+            onClick={handleRetry}
+            disabled={retryMutation.isPending}
+            className="shrink-0 gap-2"
+          >
+            <RefreshCcw size={14} className={retryMutation.isPending ? "animate-spin" : ""} />
+            {retryMutation.isPending ? "重新生成中..." : "重新生成"}
+          </Button>
+        </div>
+      )}
       <div className="flex items-center gap-1 px-6 py-2 border-b border-[var(--border)] bg-[var(--bg-elevated)]">
         {tabs.map((t) => (
           <button
@@ -1082,6 +1379,72 @@ function ReportView({ workflowId, workflowStatus, executionAttempt, workflowConf
     [fullArtifacts.user_sentiment, workflowConfig],
   );
   const competitorRoleAnalysis = fullArtifacts.competitor_role_analysis as CompetitorRoleAnalysis | undefined;
+
+  const openStructuredPrintWindow = useCallback(() => {
+    const el = structuredRef.current;
+    if (!el) return;
+
+    const existingFrame = document.getElementById("structured-report-print-frame");
+    existingFrame?.remove();
+
+    const stylesheetLinks = Array.from(document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'))
+      .map((link) => (link.href ? `<link rel="stylesheet" href="${link.href}">` : ""))
+      .join("\n");
+    const title = report?.title || "竞品分析报告";
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><base href="${window.location.origin}/"><title>${title}</title>${stylesheetLinks}<style>@page{margin:48px 24px 24px}body{font-family:"PingFang SC","Microsoft YaHei",sans-serif;max-width:900px;margin:0 auto;padding:40px 20px 20px;color:#1a1a1a;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}.print-title{text-align:center;font-size:22px;font-weight:700;margin-bottom:32px;padding-bottom:16px;border-bottom:2px solid #e5e7eb}.print-section{page-break-after:always;padding-top:24px}.print-section:last-child{page-break-after:auto}@media print{body{margin:0;padding:0}}</style></head><body><h1 class="print-title">结构化看板</h1>${el.innerHTML}</body></html>`;
+
+    const iframe = document.createElement("iframe");
+    iframe.id = "structured-report-print-frame";
+    iframe.setAttribute("title", "structured-report-print-frame");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    iframe.style.opacity = "0";
+    iframe.style.pointerEvents = "none";
+    document.body.appendChild(iframe);
+
+    const printWindow = iframe.contentWindow;
+    const printDocument = printWindow?.document;
+    if (!printWindow || !printDocument) {
+      iframe.remove();
+      return;
+    }
+
+    printDocument.open();
+    printDocument.write(html);
+    printDocument.close();
+
+    const cleanup = () => {
+      window.setTimeout(() => iframe.remove(), 1000);
+    };
+
+    const triggerPrint = () => {
+      const imageLoads = Array.from(printDocument.images).map((image) => {
+        if (image.complete) return Promise.resolve();
+        return new Promise<void>((resolve) => {
+          image.addEventListener("load", () => resolve(), { once: true });
+          image.addEventListener("error", () => resolve(), { once: true });
+        });
+      });
+
+      void Promise.all([printDocument.fonts.ready.catch(() => undefined), ...imageLoads]).finally(() => {
+        printWindow.addEventListener("afterprint", cleanup, { once: true });
+        printWindow.focus();
+        printWindow.print();
+        cleanup();
+      });
+    };
+
+    if (printDocument.readyState === "complete") {
+      window.setTimeout(triggerPrint, 300);
+      return;
+    }
+
+    iframe.addEventListener("load", () => window.setTimeout(triggerPrint, 300), { once: true });
+  }, [report?.title]);
 
   const [revisions, setRevisions] = useState<Array<{ number: number; passed: boolean; targetNode?: string; score?: number }>>([]);
 
@@ -1213,7 +1576,7 @@ function ReportView({ workflowId, workflowStatus, executionAttempt, workflowConf
                         URL.revokeObjectURL(url);
                         setShowDownloadConfirm(false);
                       }}
-                      className="px-4 py-1.5 text-xs rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white transition-colors"
+                      className="rounded-xl bg-[var(--accent)] px-4 py-1.5 text-xs text-white shadow-[0_10px_24px_var(--accent-glow)] transition-all hover:bg-[var(--accent-strong)]"
                     >
                       确认下载
                     </button>
@@ -1229,7 +1592,7 @@ function ReportView({ workflowId, workflowStatus, executionAttempt, workflowConf
           <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-xl max-w-sm w-full space-y-4">
             <p className="text-sm font-medium text-[var(--text-primary)]">确认为 PDF 打印？</p>
             <p className="text-xs text-[var(--text-muted)]">
-              将在新窗口中打开报告内容并自动弹出打印对话框，选择「另存为 PDF」即可保存。
+              将直接打开浏览器打印对话框，选择「另存为 PDF」即可保存。
             </p>
             <div className="flex gap-2 justify-end">
               <button
@@ -1241,18 +1604,9 @@ function ReportView({ workflowId, workflowStatus, executionAttempt, workflowConf
               <button
                 onClick={() => {
                   setShowPdfConfirm(false);
-                  const el = structuredRef.current;
-                  if (!el) return;
-                  const printWindow = window.open("", "_blank");
-                  if (!printWindow) return;
-                  const styles = Array.from(document.querySelectorAll("style, link[rel=stylesheet]"))
-                    .map((s) => s.outerHTML).join("\n");
-                  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${report?.title || "竞品分析报告"}</title>${styles}<style>@page{margin:48px 24px 24px}body{font-family:"PingFang SC","Microsoft YaHei",sans-serif;max-width:900px;margin:0 auto;padding:40px 20px 20px;color:#1a1a1a;-webkit-print-color-adjust:exact;print-color-adjust:exact}.print-title{text-align:center;font-size:22px;font-weight:700;margin-bottom:32px;padding-bottom:16px;border-bottom:2px solid #e5e7eb}.print-section{page-break-after:always;padding-top:24px}.print-section:last-child{page-break-after:auto}@media print{body{margin:0;padding:0}}</style></head><body><h1 class="print-title">结构化看板</h1>${el.innerHTML}</body></html>`;
-                  printWindow.document.write(html);
-                  printWindow.document.close();
-                  printWindow.onload = () => { setTimeout(() => printWindow.print(), 300); };
+                  openStructuredPrintWindow();
                 }}
-                className="px-4 py-1.5 text-xs rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white transition-colors"
+                className="rounded-xl bg-[var(--accent)] px-4 py-1.5 text-xs text-white shadow-[0_10px_24px_var(--accent-glow)] transition-all hover:bg-[var(--accent-strong)]"
               >
                 确认打印
               </button>

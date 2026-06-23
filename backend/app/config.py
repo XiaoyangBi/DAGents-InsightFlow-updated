@@ -21,6 +21,21 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.3
 
     TAVILY_API_KEY: str = ""
+    SEARCH_MAX_EXECUTED_QUERIES: int = 10
+    SEARCH_MAX_RECOVERY_QUERIES: int = 6
+
+    MEMORY_BACKEND: str = "noop"
+    MEMORY_TOP_K: int = 8
+    MEMORY_WRITEBACK_ENABLED: bool = True
+
+    RETRIEVER_BACKEND: str = "noop"
+    RAG_TOP_K: int = 8
+    RAG_RERANK_TOP_N: int = 4
+
+    WORKFLOW_NODE_MAX_ATTEMPTS: int = 3
+    WORKFLOW_NODE_TIMEOUT_SEC: int = 300
+    WORKFLOW_REPORT_TIMEOUT_SEC: int = 900
+    WORKFLOW_RETRY_BACKOFF_BASE_SEC: int = 2
 
     LANGSMITH_API_KEY: str = ""
     LANGSMITH_PROJECT: str = "dagents-insightflow"

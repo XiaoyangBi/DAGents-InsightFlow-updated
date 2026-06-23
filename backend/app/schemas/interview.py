@@ -19,6 +19,8 @@ class InterviewMessage(BaseModel):
 
 class InterviewInput(BaseModel):
     user_message: str
+    thinking_enabled: bool = False
+    analysis_preferences: dict | None = None
 
 
 class InterviewOutput(BaseModel):

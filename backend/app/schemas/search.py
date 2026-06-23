@@ -20,7 +20,7 @@ class SearchQuerySpec(BaseModel):
     @classmethod
     def recovery_templates_require_product(cls, values: list[str]) -> list[str]:
         normalized: list[str] = []
-        for value in values[:2]:
+        for value in values:
             query = " ".join(str(value).split())
             if query and "{product}" in query and query not in normalized:
                 normalized.append(query)

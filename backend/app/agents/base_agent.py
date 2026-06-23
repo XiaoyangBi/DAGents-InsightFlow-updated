@@ -47,6 +47,17 @@ class BaseAgent:
 
     # ── LLM 调用 ────────────────────────────────────────────────
 
+    @staticmethod
+    def _augment_payload_with_context(ctx: AgentContext, user_payload: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(user_payload)
+        if isinstance(ctx.memory_context, dict) and ctx.memory_context:
+            payload.setdefault("memory_context", ctx.memory_context)
+        if isinstance(ctx.rag_context, dict) and ctx.rag_context:
+            payload.setdefault("rag_context", ctx.rag_context)
+        if isinstance(ctx.context_trace, dict) and ctx.context_trace:
+            payload.setdefault("context_trace", ctx.context_trace)
+        return payload
+
     async def invoke_llm(
         self,
         system_prompt: str,
@@ -75,9 +86,10 @@ class BaseAgent:
         async def _on_token(token: str) -> None:
             await self.stream_llm_token(ctx, token)
 
+        enriched_payload = self._augment_payload_with_context(ctx, user_payload)
         return await invoke_json_model(
             system_prompt,
-            user_payload,
+            enriched_payload,
             schema,
             stream_callback=_on_token if stream_response else None,
         )
@@ -97,7 +109,8 @@ class BaseAgent:
         if request_meta:
             payload.update(request_meta)
         await self.log_and_broadcast(ctx, EventType.LLM_REQUEST, payload)
-        result = await invoke_structured_model(system_prompt, user_payload, schema)
+        enriched_payload = self._augment_payload_with_context(ctx, user_payload)
+        result = await invoke_structured_model(system_prompt, enriched_payload, schema)
         if result is not None:
             return result
 
@@ -105,7 +118,7 @@ class BaseAgent:
             ctx,
             stage="structured_output_fallback",
             message="模型原生结构化输出为空，正在切换到 JSON 提取与修复路径。",
-            level="warning",
+            level="info",
         )
 
         async def _on_token(token: str) -> None:
@@ -113,7 +126,7 @@ class BaseAgent:
 
         return await invoke_json_model(
             system_prompt,
-            user_payload,
+            enriched_payload,
             schema,
             stream_callback=_on_token,
         )

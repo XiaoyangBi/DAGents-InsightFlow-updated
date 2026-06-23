@@ -9,10 +9,11 @@ import type { InterviewMessage } from "@/types/interview";
 interface Props {
   messages: InterviewMessage[];
   isStreaming: boolean;
+  enableQuickReply?: boolean;
   onQuickReply?: (text: string) => void;
 }
 
-export function ChatStream({ messages, isStreaming, onQuickReply }: Props) {
+export function ChatStream({ messages, isStreaming, enableQuickReply = false, onQuickReply }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const visibleMessages = messages.filter(
     (msg, index) => Boolean(msg.content) || (isStreaming && index === messages.length - 1),
@@ -25,21 +26,32 @@ export function ChatStream({ messages, isStreaming, onQuickReply }: Props) {
   }, [messages]);
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-6">
+    <div ref={scrollRef} className="flex-1 space-y-6 overflow-y-auto p-6">
       {visibleMessages.map((msg, i) => (
         <div key={i} className={`flex w-full ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
           <div
-            className={`max-w-[75%] rounded-2xl px-5 py-4 text-sm leading-relaxed ${
+            className={`max-w-[75%] overflow-hidden rounded-[24px] text-sm leading-relaxed shadow-sm backdrop-blur-sm ${
               msg.role === "user"
-                ? "bg-blue-600 text-white rounded-tr-md shadow-sm"
-                : "bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-tl-md text-slate-800 dark:text-zinc-200 shadow-sm"
+                ? "rounded-tr-lg border border-emerald-400/20 bg-[var(--accent)] text-[#04111c] shadow-[0_18px_40px_var(--accent-glow)]"
+                : "rounded-tl-lg border border-[var(--border)] bg-[var(--bg-card)] text-[var(--text-primary)]"
             }`}
           >
             {msg.content ? (
               msg.role === "user" ? (
-                <p className="leading-relaxed">{msg.content}</p>
+                <div className="space-y-2 px-5 py-4">
+                  <span className="block text-[10px] font-medium uppercase tracking-[0.16em] text-[#0a4b3e]/70">
+                    你的输入
+                  </span>
+                  <p className="leading-relaxed font-medium">{msg.content}</p>
+                </div>
               ) : (
-                <div className="
+                <div className="space-y-3 px-5 py-4">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex h-6 items-center rounded-full border border-[var(--border)] bg-[var(--bg-panel)] px-2.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--text-muted)]">
+                      Agent 回应
+                    </span>
+                  </div>
+                  <div className="
                   prose prose-sm max-w-none dark:prose-invert
                   prose-p:leading-[1.85] prose-p:my-3
                   prose-headings:font-semibold prose-headings:tracking-tight
@@ -50,7 +62,7 @@ export function ChatStream({ messages, isStreaming, onQuickReply }: Props) {
                   prose-ul:my-4 prose-ol:my-4
                   prose-ul:list-none prose-ul:pl-0
                   prose-ol:list-none prose-ol:pl-0
-                  prose-code:text-emerald-300 dark:prose-code:bg-zinc-800 prose-code:bg-zinc-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:font-normal prose-code:text-xs
+                  prose-code:text-emerald-500 dark:prose-code:text-emerald-300 dark:prose-code:bg-zinc-800 prose-code:bg-[var(--bg-elevated)] prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:font-normal prose-code:text-xs
                   space-y-3
                 ">
                   <ReactMarkdown
@@ -58,13 +70,41 @@ export function ChatStream({ messages, isStreaming, onQuickReply }: Props) {
                     components={{
                       li: ({ children }) => {
                         const text = extractText(children);
+                        if (enableQuickReply && text.trim()) {
+                          return (
+                            <QuickReplyCard text={text} onClick={() => onQuickReply?.(text)}>
+                              <div className="text-sm text-[var(--text-secondary)] leading-[1.85]">{children}</div>
+                            </QuickReplyCard>
+                          );
+                        }
                         return (
-                          <OptionCard
-                            text={text}
-                            onClick={() => onQuickReply?.(text)}
-                          >
+                          <ReadableListItem>
                             <div className="text-sm text-[var(--text-secondary)] leading-[1.85]">{children}</div>
-                          </OptionCard>
+                          </ReadableListItem>
+                        );
+                      },
+                      p: ({ children }) => (
+                        <p className="leading-[1.9] text-[var(--text-primary)]">{children}</p>
+                      ),
+                      blockquote: ({ children }) => (
+                        <blockquote className="rounded-r-2xl border-l-2 border-[var(--accent)]/60 bg-[var(--bg-panel)] px-4 py-3 text-[var(--text-secondary)]">
+                          {children}
+                        </blockquote>
+                      ),
+                      pre: ({ children }) => (
+                        <pre className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--bg-panel)] p-4 text-xs leading-6 text-[var(--text-primary)]">
+                          {children}
+                        </pre>
+                      ),
+                      code: ({ className, children }) => {
+                        const isBlock = Boolean(className);
+                        if (isBlock) {
+                          return <code className={className}>{children}</code>;
+                        }
+                        return (
+                          <code className="rounded-md bg-[var(--bg-elevated)] px-1.5 py-0.5 text-[11px] text-emerald-500 dark:text-emerald-300">
+                            {children}
+                          </code>
                         );
                       },
                     }}
@@ -72,10 +112,11 @@ export function ChatStream({ messages, isStreaming, onQuickReply }: Props) {
                     {msg.content}
                   </ReactMarkdown>
                 </div>
+                </div>
               )
             ) : (
               isStreaming && i === visibleMessages.length - 1 && (
-                <div className="flex items-center gap-2 text-zinc-500">
+                <div className="flex items-center gap-2 px-5 py-4 text-[var(--text-muted)]">
                   <Spinner size={14} />
                   <span className="text-xs">AI 正在思考...</span>
                 </div>
@@ -86,7 +127,7 @@ export function ChatStream({ messages, isStreaming, onQuickReply }: Props) {
       ))}
       {visibleMessages.length === 0 && (
         <div className="flex flex-col items-center justify-center h-full text-center gap-3">
-          <div className="w-12 h-12 rounded-full bg-[var(--bg-elevated)] flex items-center justify-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
             <svg className="w-6 h-6 text-[var(--text-muted)]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
             </svg>
@@ -99,8 +140,7 @@ export function ChatStream({ messages, isStreaming, onQuickReply }: Props) {
   );
 }
 
-/* ─── Option Card ─── */
-function OptionCard({
+function QuickReplyCard({
   text,
   onClick,
   children,
@@ -117,26 +157,41 @@ function OptionCard({
   };
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
+    <button
+      type="button"
       onClick={handleClick}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") handleClick(); }}
-      className={`group w-full text-left p-4 rounded-xl border transition-all duration-200 mb-2 cursor-pointer
-        ${selected
-          ? "border-blue-500/40 bg-blue-500/5 ring-1 ring-blue-500/20"
-          : "border-slate-200 dark:border-zinc-700/50 bg-white dark:bg-zinc-900/50 hover:border-blue-500/30 hover:bg-blue-50/10 dark:hover:bg-blue-500/5 hover:-translate-y-0.5 active:scale-[0.99] shadow-sm"
-        }`}
+      className={`mb-2 w-full rounded-2xl border p-4 text-left shadow-sm transition-all ${
+        selected
+          ? "border-emerald-400/35 bg-emerald-500/12"
+          : "border-[var(--border)] bg-[var(--bg-panel)] hover:-translate-y-0.5 hover:border-[var(--accent)]/35 hover:bg-[var(--bg-elevated)]"
+      }`}
+      aria-label={`使用建议：${text}`}
     >
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <span className="inline-flex h-6 items-center rounded-full border border-[var(--border)] bg-[var(--bg-card)] px-2.5 text-[10px] font-medium uppercase tracking-[0.16em] text-[var(--text-muted)]">
+          Quick Reply
+        </span>
+        <span className="text-[10px] text-[var(--text-muted)]">点击直接发送</span>
+      </div>
       <div className="flex items-start gap-3">
-        {selected && (
-          <span className="mt-0.5 shrink-0 w-5 h-5 rounded-full bg-emerald-500 flex items-center justify-center">
-            <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-            </svg>
-          </span>
-        )}
-        <div className="flex-1 min-w-0">
+        <span className="mt-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--bg-card)] text-[10px] font-medium text-[var(--text-muted)]">
+          •
+        </span>
+        <div className="min-w-0 flex-1">{children}</div>
+      </div>
+    </button>
+  );
+}
+
+/* ─── Readable List Item ─── */
+function ReadableListItem({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mb-2 w-full rounded-2xl border border-[var(--border)] bg-[var(--bg-panel)] p-4 text-left shadow-sm">
+      <div className="flex items-start gap-3">
+        <span className="mt-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--bg-card)] text-[10px] font-medium text-[var(--text-muted)]">
+          •
+        </span>
+        <div className="min-w-0 flex-1">
           {children}
         </div>
       </div>
@@ -144,7 +199,6 @@ function OptionCard({
   );
 }
 
-/* ─── Helpers ─── */
 function extractText(children: React.ReactNode): string {
   if (typeof children === "string") return children;
   if (typeof children === "number") return String(children);

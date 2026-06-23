@@ -4,9 +4,10 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import type { InterviewInsights } from "@/lib/interview-insights";
 import { motion, AnimatePresence } from "framer-motion";
 import { Check, Plus, X, ChevronDown, Pencil } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { CompetitorGroups, ProductCategory, ProductProfile, WorkflowConfig } from "@/types/workflow";
 
 interface Props {
@@ -18,6 +19,7 @@ interface Props {
   canStart: boolean;
   /** 后端 /start 失败信息（如 ConfigIncompleteError 等），非 null 时高亮显示 */
   startError: string | null;
+  interviewInsights: InterviewInsights;
   onNewCompetitorChange: (v: string) => void;
   onAddCompetitor: () => void;
   onRemoveCompetitor: (name: string) => void;
@@ -34,6 +36,7 @@ export function ConfigPanel({
   newCompetitor,
   canStart,
   startError,
+  interviewInsights,
   onNewCompetitorChange,
   onAddCompetitor,
   onRemoveCompetitor,
@@ -42,9 +45,12 @@ export function ConfigPanel({
   onResumeEditing,
 }: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [showDetailedConfig, setShowDetailedConfig] = useState(false);
   const toggle = (k: string) => setCollapsed((p) => ({ ...p, [k]: !p[k] }));
   const productProfile = config.product_profile ?? emptyProductProfile(config);
   const competitorGroups = config.competitor_groups ?? emptyCompetitorGroups();
+  const hasInterviewSummary =
+    interviewInsights.longTermTargets.length > 0 || Boolean(interviewInsights.coreQuestion) || Boolean(interviewInsights.decisionUse);
   const updateProfile = (field: keyof ProductProfile, value: string | string[]) => {
     onConfigChange("product_profile", {
       ...productProfile,
@@ -57,6 +63,12 @@ export function ConfigPanel({
       [field]: value,
     });
   };
+
+  useEffect(() => {
+    if (!hasInterviewSummary) {
+      setShowDetailedConfig(true);
+    }
+  }, [hasInterviewSummary]);
 
   return (
     <div className="flex flex-col h-full space-y-4">
@@ -77,7 +89,7 @@ export function ConfigPanel({
               </span>
             )}
           </h2>
-          <p className="text-xs text-[var(--text-muted)]">AI 从对话中提取的结构化配置</p>
+          <p className="text-xs text-[var(--text-muted)]">AI 从对话中提取的结构化调研配置</p>
         </div>
         {isComplete && (
           <motion.span
@@ -91,13 +103,102 @@ export function ConfigPanel({
       </div>
 
       <div className="flex-1 overflow-y-auto space-y-3 rounded-2xl border border-[var(--border)] bg-[var(--bg-card)]/60 backdrop-blur-xl p-4">
-        <FieldSection label="分析标题" collapsed={collapsed.title} onToggle={() => toggle("title")}>
+        {hasInterviewSummary && (
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-panel)] p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[var(--text-muted)]">
+                  访谈总结卡
+                </p>
+                <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                  在确认启动前，先把这次调研要长期追踪的对象和问题钉住。
+                </p>
+              </div>
+              {interviewInsights.memoryTags.length > 0 && (
+                <div className="flex flex-wrap justify-end gap-1.5">
+                  {interviewInsights.memoryTags.map((tag) => (
+                    <Badge key={tag} variant="indigo">{tag}</Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <SummaryBlock
+                label="长期追踪对象"
+                value={interviewInsights.longTermTargets.length > 0 ? interviewInsights.longTermTargets.join("、") : "待确认"}
+              />
+              <SummaryBlock
+                label="本次核心问题"
+                value={interviewInsights.coreQuestion || "待用户确认本次最想搞明白的问题"}
+              />
+              <SummaryBlock
+                label="预期决策用途"
+                value={interviewInsights.decisionUse || "待确认这次调研最终要支持的判断"}
+              />
+            </div>
+
+            {interviewInsights.competitorHints.length > 0 && (
+              <div className="mt-4 border-t border-[var(--border)] pt-4">
+                <p className="text-[11px] font-medium text-[var(--text-muted)]">推荐解释可见化</p>
+                <div className="mt-2 space-y-2">
+                  {interviewInsights.competitorHints.map((hint) => (
+                    <div
+                      key={hint.name}
+                      className="flex items-start justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2"
+                    >
+                      <div>
+                        <p className="text-sm font-medium text-[var(--text-primary)]">{hint.name}</p>
+                        <p className="mt-1 text-[11px] text-[var(--text-muted)]">{hint.role}</p>
+                      </div>
+                      <div className="flex flex-wrap justify-end gap-1.5">
+                        {hint.tags.map((tag) => (
+                          <Badge key={`${hint.name}-${tag}`}>{tag}</Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {hasInterviewSummary && (
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2.5">
+            <button
+              type="button"
+              onClick={() => setShowDetailedConfig((prev) => !prev)}
+              className="flex w-full items-center justify-between gap-3 text-left"
+            >
+              <div>
+                <p className="text-xs font-medium text-[var(--text-primary)]">
+                  {showDetailedConfig ? "收起详细配置" : "查看详细配置"}
+                </p>
+                <p className="mt-1 text-[11px] text-[var(--text-muted)]">
+                  总结卡优先展示调研主线，详细字段改为按需展开，避免信息重复。
+                </p>
+              </div>
+              <ChevronDown
+                size={14}
+                className={`shrink-0 text-[var(--text-muted)] transition-transform ${showDetailedConfig ? "rotate-180" : ""}`}
+              />
+            </button>
+          </div>
+        )}
+
+        {(!hasInterviewSummary || showDetailedConfig) && (
+          <>
+        <FieldSection label="你的产品名称" collapsed={collapsed.title} onToggle={() => toggle("title")}>
           <Input
             value={typeof config.target_product === "string" ? config.target_product : ""}
             onChange={(e) => onConfigChange("target_product", e.target.value)}
-            placeholder="等待 AI 提取..."
+            placeholder="例如：飞书、DAGents-InsightFlow"
             className="h-9 text-sm bg-[var(--bg-elevated)] border-[var(--border)]"
           />
+          <p className="mt-2 text-[11px] text-[var(--text-muted)]">
+            这里填写的是你的产品，右侧竞品列表里再填写你想调研分析的竞品。
+          </p>
         </FieldSection>
 
         <FieldSection label="产品品类" collapsed={collapsed.category} onToggle={() => toggle("category")}>
@@ -118,7 +219,7 @@ export function ConfigPanel({
           </div>
         </FieldSection>
 
-        <FieldSection label="目标产品状态" collapsed={collapsed.productStatus} onToggle={() => toggle("productStatus")}>
+        <FieldSection label="你的产品状态" collapsed={collapsed.productStatus} onToggle={() => toggle("productStatus")}>
           <div className="flex gap-1.5 flex-wrap">
             {PRODUCT_STATUS_OPTIONS.map((option) => (
               <button
@@ -210,7 +311,7 @@ export function ConfigPanel({
 
         <FieldSection label="竞品与角色判断" collapsed={collapsed.competitors} onToggle={() => toggle("competitors")}>
           <p className="text-[11px] text-[var(--text-muted)] mb-2">
-            这里优先展示你明确要分析的竞品；五类角色只是参考标签，不需要凑满才能开始分析。
+            这里填写你想调研分析的竞品；五类角色只是参考标签，不需要凑满才能开始分析。
           </p>
           <div className="space-y-2">
             <GroupedCompetitorInput
@@ -287,6 +388,8 @@ export function ConfigPanel({
             )}
           </div>
         </FieldSection>
+          </>
+        )}
       </div>
 
       {/* /start 错误内联回显 */}
@@ -308,7 +411,8 @@ export function ConfigPanel({
             <Button
               onClick={onStart}
               disabled={isStarting || !canStart}
-              className="w-full py-5 text-sm font-semibold rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white shadow-[0_0_24px_var(--accent-glow)] transition-all duration-300 hover:shadow-[0_0_36px_var(--accent-glow)] disabled:bg-zinc-700 disabled:shadow-none disabled:cursor-not-allowed"
+              variant="primary"
+              className="h-14 w-full rounded-2xl text-sm font-semibold"
             >
               {isStarting ? (
                 <span className="flex items-center gap-2"><Spinner size={14} /> 启动 LangGraph 引擎...</span>
@@ -333,6 +437,15 @@ export function ConfigPanel({
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+function SummaryBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] px-3 py-3">
+      <p className="text-[10px] uppercase tracking-[0.16em] text-[var(--text-muted)]">{label}</p>
+      <p className="mt-1 text-sm leading-6 text-[var(--text-primary)]">{value}</p>
     </div>
   );
 }

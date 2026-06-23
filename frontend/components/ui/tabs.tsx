@@ -42,7 +42,7 @@ export function TabsList({ className, children }: { className?: string; children
   return (
     <div
       className={cn(
-        "inline-flex items-center gap-1 rounded-lg bg-[var(--bg-elevated)] p-1 border border-[var(--border)]",
+        "inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-sm backdrop-blur-sm",
         className
       )}
     >
@@ -65,10 +65,10 @@ export function TabsTrigger({
     <button
       onClick={() => setActive(value)}
       className={cn(
-        "px-4 py-2 text-sm font-medium rounded-md transition-colors",
+        "rounded-full px-4 py-2 text-sm font-medium transition-all duration-200",
         active === value
-          ? "bg-[var(--bg-card)] text-[var(--text-primary)] shadow-sm"
-          : "text-[var(--text-muted)] hover:text-[var(--text-primary)]",
+          ? "bg-[var(--bg-elevated)] text-[var(--text-primary)] shadow-sm"
+          : "text-[var(--text-muted)] hover:bg-[var(--bg-panel)] hover:text-[var(--text-primary)]",
         className
       )}
     >

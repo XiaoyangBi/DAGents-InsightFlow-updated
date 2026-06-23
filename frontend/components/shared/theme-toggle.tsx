@@ -24,12 +24,14 @@ export function ThemeToggle() {
       </div>
       <button
         onClick={() => setTheme(isDark ? "light" : "dark")}
-        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-          isDark ? "bg-emerald-500" : "bg-zinc-300"
+        className={`relative inline-flex h-7 w-12 items-center rounded-full border transition-colors ${
+          isDark
+            ? "border-emerald-400/30 bg-emerald-500/90"
+            : "border-[var(--border)] bg-[var(--bg-elevated)]"
         }`}
       >
         <span
-          className={`inline-flex h-4 w-4 items-center justify-center rounded-full bg-white shadow-sm transition-transform ${
+          className={`inline-flex h-5 w-5 items-center justify-center rounded-full bg-white shadow-sm transition-transform ${
             isDark ? "translate-x-6" : "translate-x-1"
           }`}
         >

@@ -36,6 +36,23 @@ def tavily_is_configured() -> bool:
     return has_real_value(get_settings().TAVILY_API_KEY)
 
 
+def get_provider_compat_kwargs(*, allow_thinking: bool = False, thinking_enabled: bool = False) -> dict[str, Any]:
+    """为 OpenAI-compatible 提供商注入必要的兼容参数。"""
+    base_url = (get_settings().LLM_BASE_URL or "").strip().lower()
+    if "api.deepseek.com" in base_url:
+        if allow_thinking:
+            return {
+                "extra_body": {
+                    "thinking": {"type": "enabled" if thinking_enabled else "disabled"},
+                }
+            }
+        # DeepSeek V4 默认开启 thinking。当前 LangChain 的 function calling /
+        # structured output 路径不会自动回传 reasoning_content，容易触发
+        # tool_choice 相关 400 报错，因此非访谈路径统一关闭 thinking。
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    return {}
+
+
 def make_chat_model(temperature: float | None = None) -> ChatOpenAI:
     """每次调用新建 ChatOpenAI 实例，避免跨请求共享状态。
 
@@ -48,6 +65,7 @@ def make_chat_model(temperature: float | None = None) -> ChatOpenAI:
         base_url=settings.LLM_BASE_URL,
         model=settings.LLM_MODEL,
         temperature=settings.LLM_TEMPERATURE if temperature is None else temperature,
+        **get_provider_compat_kwargs(),
     )
 
 

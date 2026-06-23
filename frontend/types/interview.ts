@@ -11,6 +11,14 @@ export interface InterviewMessage {
 
 export interface InterviewInput {
   user_message: string;
+  thinking_enabled?: boolean;
+  analysis_preferences?: {
+    reportLanguage?: "中文" | "英文";
+    analysisDepth?: "快速" | "标准" | "深入";
+    competitorCount?: 3 | 5 | 8;
+    outputFocus?: "功能" | "定价" | "用户反馈" | "全量";
+    reportStyle?: "简报型" | "结构化研究型";
+  };
 }
 
 export interface InterviewSSEMessage {

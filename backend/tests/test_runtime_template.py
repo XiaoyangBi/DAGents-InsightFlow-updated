@@ -34,6 +34,8 @@ def test_competitive_template_declares_business_nodes_and_gate_nodes():
         "review",
     )
     assert template.node("review").gate_id == "review__gate"
+    assert template.node("information_collection").retry_policy.timeout_sec == 300
+    assert template.node("report_writing").retry_policy.timeout_sec == 900
 
 
 def test_pause_request_is_ui_metadata_not_full_dag_state():

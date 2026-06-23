@@ -114,6 +114,82 @@ async def test_collect_for_product_runs_recovery_queries_when_initial_recall_is_
 
 
 @pytest.mark.asyncio
+async def test_collection_agent_run_builds_per_summary_end_to_end():
+    client = AsyncMock()
+
+    async def _search(*, query, **kwargs):
+        if "产品A 产品概览" in query:
+            return {
+                "results": [{
+                    "url": "https://example.com/a-overview",
+                    "title": "产品A 官方概览",
+                    "content": "产品A 的公开介绍",
+                    "score": 0.91,
+                }],
+            }
+        if "产品A 定价 用户协议" in query:
+            return {
+                "results": [{
+                    "url": "https://example.com/a-pricing",
+                    "title": "产品A 定价规则",
+                    "content": "产品A 的定价说明",
+                    "score": 0.88,
+                }],
+            }
+        return {"results": []}
+
+    client.search.side_effect = _search
+    plan = SearchQueryPlan(
+        strategy_summary="按概览和定价分别检索",
+        queries=[
+            SearchQuerySpec(
+                intent="overview",
+                query_template="{product} 产品概览",
+                recovery_query_templates=["{product} overview alt"],
+            ),
+            SearchQuerySpec(
+                intent="dimension:定价",
+                dimension="定价",
+                query_template="{product} 定价",
+                recovery_query_templates=["{product} 定价 用户协议"],
+            ),
+        ],
+    )
+    state = {
+        "config": {
+            "target_product": "自研产品",
+            "target_product_status": "pre_launch",
+            "product_category": "AI 产品 / 智能助手",
+            "competitors": ["产品A"],
+            "competitor_count": 1,
+            "focus_dimensions": ["定价"],
+        },
+    }
+    resolution = SimpleNamespace(
+        competitors=["产品A"],
+        dropped=[],
+        added=[],
+        query="产品A competitors",
+        subcategory="generic",
+    )
+
+    with (
+        patch("app.agents.collection_agent.tavily_is_configured", return_value=True),
+        patch("app.agents.collection_agent.AsyncTavilyClient", return_value=client),
+        patch("app.agents.collection_agent.resolve_competitors", new=AsyncMock(return_value=resolution)),
+        patch("app.agents.collection_agent.build_search_query_plan", new=AsyncMock(return_value=plan)),
+    ):
+        result = await CollectionAgent().run(state, _ctx())
+
+    summary = result["search_per"]["summary"]
+    assert summary["replanned_product_count"] == 1
+    assert summary["fully_covered_product_count"] == 1
+    assert summary["successful_replans"] == 1
+    assert summary["replan_hit_rate"] == 1.0
+    assert result["search_coverage"]["产品A"]["missing_dimensions"] == []
+
+
+@pytest.mark.asyncio
 async def test_duplicate_url_accumulates_all_covered_intents():
     client = AsyncMock()
     client.search.return_value = {
@@ -165,6 +241,80 @@ def test_recovery_query_plan_retries_uncovered_dimension_even_with_many_sources(
     assert "商户 收单 服务费率" in queries[0][1]
 
 
+def test_replan_query_plan_skips_non_dimension_gap_when_product_already_has_sources():
+    plan = SearchQueryPlan(
+        queries=[
+            SearchQuerySpec(
+                intent="overview",
+                query_template="{product} 产品概览",
+                recovery_query_templates=["{product} overview"],
+            ),
+            SearchQuerySpec(
+                intent="dimension:费率",
+                dimension="费率",
+                query_template="{product} 费率",
+                recovery_query_templates=["{product} 费率 用户协议"],
+            ),
+        ],
+    )
+    coverage = {
+        "source_count": 2,
+        "covered_intents": ["dimension:费率"],
+        "missing_intents": ["overview"],
+        "missing_dimensions": [],
+        "missing_product": False,
+        "needs_replan": False,
+    }
+
+    queries = CollectionAgent()._build_replan_query_plan("微信支付", plan, coverage)
+
+    assert queries == []
+
+
+def test_replan_query_plan_for_missing_product_includes_foundational_recovery_queries():
+    plan = SearchQueryPlan(
+        queries=[
+            SearchQuerySpec(
+                intent="overview",
+                query_template="{product} 产品概览",
+                recovery_query_templates=["{product} overview alt"],
+            ),
+            SearchQuerySpec(
+                intent="official",
+                query_template="{product} 官方 文档",
+                recovery_query_templates=["{product} 官网 说明"],
+            ),
+            SearchQuerySpec(
+                intent="independent_evidence",
+                query_template="{product} 评测",
+                recovery_query_templates=["{product} review comparison"],
+            ),
+            SearchQuerySpec(
+                intent="dimension:费率",
+                dimension="费率",
+                query_template="{product} 费率",
+                recovery_query_templates=["{product} 费率 用户协议"],
+            ),
+        ],
+    )
+    coverage = {
+        "source_count": 0,
+        "covered_intents": [],
+        "missing_intents": ["overview", "official", "independent_evidence", "dimension:费率"],
+        "missing_dimensions": ["费率"],
+        "missing_product": True,
+        "needs_replan": True,
+    }
+
+    queries = CollectionAgent()._build_replan_query_plan("微信支付", plan, coverage)
+    intents = [intent for intent, _ in queries]
+
+    assert "overview" in intents
+    assert "official" in intents
+    assert "independent_evidence" in intents
+    assert "dimension:费率" in intents
+
+
 def test_search_coverage_reports_dimension_gaps_separately_from_source_count():
     plan = SearchQueryPlan(queries=[
         SearchQuerySpec(intent="overview", query_template="{product} overview"),
@@ -182,3 +332,31 @@ def test_search_coverage_reports_dimension_gaps_separately_from_source_count():
 
     assert coverage["产品A"]["source_count"] == 1
     assert coverage["产品A"]["missing_dimensions"] == ["价格"]
+
+
+def test_per_summary_counts_replans_and_remaining_gaps():
+    product_traces = {
+        "产品A": {
+            "replan_query_count": 2,
+            "main_coverage": {"missing_dimensions": ["价格"], "missing_product": False},
+            "final_coverage": {"missing_dimensions": [], "missing_product": False},
+        },
+        "产品B": {
+            "replan_query_count": 1,
+            "main_coverage": {"missing_dimensions": ["功能"], "missing_product": True},
+            "final_coverage": {"missing_dimensions": ["功能"], "missing_product": True},
+        },
+    }
+    search_coverage = {
+        "产品A": {"missing_dimensions": [], "missing_product": False},
+        "产品B": {"missing_dimensions": ["功能"], "missing_product": True},
+    }
+
+    summary = CollectionAgent()._build_per_summary(product_traces, search_coverage)
+
+    assert summary["replanned_product_count"] == 2
+    assert summary["fully_covered_product_count"] == 1
+    assert summary["products_missing_after_replan"] == ["产品B"]
+    assert summary["dimensions_missing_after_replan"] == {"产品B": ["功能"]}
+    assert summary["successful_replans"] == 1
+    assert summary["replan_hit_rate"] == 0.5

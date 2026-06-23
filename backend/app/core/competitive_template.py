@@ -27,6 +27,7 @@ from app.agents.analysis_agent import AnalysisAgent
 from app.agents.collection_agent import CollectionAgent
 from app.agents.report_agent import ReportAgent
 from app.agents.review_agent import ReviewAgent
+from app.config import get_settings
 from app.core.runtime.policies import DefaultRoutePolicy, ReviewFailPausePolicy, ReviewRoutePolicy
 from app.core.runtime.template import ArtifactDraft, GraphTemplate, NodeSpec, RetryPolicy
 
@@ -48,6 +49,18 @@ _collection_agent = CollectionAgent()
 _analysis_agent = AnalysisAgent()
 _report_agent = ReportAgent()
 _review_agent = ReviewAgent()
+_settings = get_settings()
+
+
+def _retry_policy(*, report: bool = False) -> RetryPolicy:
+    return RetryPolicy(
+        max_attempts=_settings.WORKFLOW_NODE_MAX_ATTEMPTS,
+        timeout_sec=(
+            _settings.WORKFLOW_REPORT_TIMEOUT_SEC
+            if report else _settings.WORKFLOW_NODE_TIMEOUT_SEC
+        ),
+        backoff_base_sec=_settings.WORKFLOW_RETRY_BACKOFF_BASE_SEC,
+    )
 
 
 def _collection_artifacts(patch: dict, data: dict) -> list[ArtifactDraft]:
@@ -134,6 +147,10 @@ def make_initial_data(workflow) -> dict:
     return {
         "config": workflow.config,
         "competitors": [],
+        "memory_context": {},
+        "rag_context": {},
+        "context_trace": {},
+        "memory_writeback_candidates": [],
         "raw_data": {},
         "collection_errors": {},
         "context_summaries": {},
@@ -166,7 +183,7 @@ CompetitiveAnalysisTemplate = GraphTemplate(
             agent=_collection_agent,
             default_next="analysis",
             allowed_routes=REROUTE_TARGETS,
-            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            retry_policy=_retry_policy(),
             route_policy=DefaultRoutePolicy(),
             artifact_factory=_collection_artifacts,
         ),
@@ -175,7 +192,7 @@ CompetitiveAnalysisTemplate = GraphTemplate(
             agent=_analysis_agent,
             default_next="feature_analysis",
             allowed_routes=REROUTE_TARGETS,
-            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            retry_policy=_retry_policy(),
             route_policy=DefaultRoutePolicy(),
             artifact_factory=_analysis_artifacts,
         ),
@@ -184,7 +201,7 @@ CompetitiveAnalysisTemplate = GraphTemplate(
             agent=_analysis_agent,
             default_next="pricing_analysis",
             allowed_routes=REROUTE_TARGETS,
-            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            retry_policy=_retry_policy(),
             route_policy=DefaultRoutePolicy(),
             artifact_factory=_single_analysis_artifact("feature_analysis", "feature_matrix", "feature_matrix"),
         ),
@@ -193,7 +210,7 @@ CompetitiveAnalysisTemplate = GraphTemplate(
             agent=_analysis_agent,
             default_next="sentiment_analysis",
             allowed_routes=REROUTE_TARGETS,
-            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            retry_policy=_retry_policy(),
             route_policy=DefaultRoutePolicy(),
             artifact_factory=_single_analysis_artifact("pricing_analysis", "pricing_comparison", "pricing_comparison"),
         ),
@@ -202,7 +219,7 @@ CompetitiveAnalysisTemplate = GraphTemplate(
             agent=_analysis_agent,
             default_next="positioning_analysis",
             allowed_routes=REROUTE_TARGETS,
-            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            retry_policy=_retry_policy(),
             route_policy=DefaultRoutePolicy(),
             artifact_factory=_single_analysis_artifact("sentiment_analysis", "user_sentiment", "user_sentiment"),
         ),
@@ -211,7 +228,7 @@ CompetitiveAnalysisTemplate = GraphTemplate(
             agent=_analysis_agent,
             default_next="role_analysis",
             allowed_routes=REROUTE_TARGETS,
-            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            retry_policy=_retry_policy(),
             route_policy=DefaultRoutePolicy(),
             artifact_factory=_single_analysis_artifact("positioning_analysis", "positioning_analysis", "positioning_analysis"),
         ),
@@ -220,7 +237,7 @@ CompetitiveAnalysisTemplate = GraphTemplate(
             agent=_analysis_agent,
             default_next="gtm_analysis",
             allowed_routes=REROUTE_TARGETS,
-            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            retry_policy=_retry_policy(),
             route_policy=DefaultRoutePolicy(),
             artifact_factory=_single_analysis_artifact("role_analysis", "competitor_role_analysis", "competitor_role_analysis"),
         ),
@@ -229,7 +246,7 @@ CompetitiveAnalysisTemplate = GraphTemplate(
             agent=_analysis_agent,
             default_next="report_writing",
             allowed_routes=REROUTE_TARGETS,
-            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            retry_policy=_retry_policy(),
             route_policy=DefaultRoutePolicy(),
             artifact_factory=_single_analysis_artifact("gtm_analysis", "gtm_analysis", "gtm_analysis"),
         ),
@@ -238,7 +255,7 @@ CompetitiveAnalysisTemplate = GraphTemplate(
             agent=_report_agent,
             default_next="review",
             allowed_routes=REROUTE_TARGETS,
-            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            retry_policy=_retry_policy(report=True),
             route_policy=DefaultRoutePolicy(),
             artifact_factory=_report_artifacts,
         ),
@@ -247,7 +264,7 @@ CompetitiveAnalysisTemplate = GraphTemplate(
             agent=_review_agent,
             default_next="done",
             allowed_routes=REROUTE_TARGETS,
-            retry_policy=RetryPolicy(max_attempts=3, timeout_sec=300),
+            retry_policy=_retry_policy(),
             pause_policy=ReviewFailPausePolicy(),
             route_policy=ReviewRoutePolicy(),
         ),

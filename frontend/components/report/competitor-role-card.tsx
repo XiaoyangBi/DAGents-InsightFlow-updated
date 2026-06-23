@@ -20,12 +20,7 @@ export function CompetitorRoleCard({ data }: Props) {
 
   return (
     <section className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)]/80 p-5 space-y-4">
-      <div className="space-y-1">
-        <h3 className="text-base font-semibold text-[var(--text-primary)]">竞品角色判断</h3>
-        <p className="text-sm text-[var(--text-muted)]">
-          在报告生成前，先确认系统如何理解这些竞品在当前细分市场中的角色。
-        </p>
-      </div>
+      <h3 className="text-base font-semibold text-[var(--text-primary)]">竞品角色判断</h3>
 
       <div className="grid gap-3">
         {data.items.map((item) => (

@@ -12,6 +12,8 @@ export function useWorkflows() {
       const res = await api.get("/workflows");
       return res.data;
     },
+    staleTime: 15_000,
+    retry: 1,
   });
 }
 
@@ -113,6 +115,23 @@ export function useRetryNode() {
     },
     onSuccess: (_data, { workflowId }) => {
       qc.invalidateQueries({ queryKey: ["workflow", workflowId] });
+    },
+  });
+}
+
+export function useCancelWorkflow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ workflowId }: { workflowId: string }) => {
+      const res = await api.post(`/workflows/${workflowId}/cancel`);
+      return res.data;
+    },
+    onSuccess: (_data, { workflowId }) => {
+      qc.setQueryData<WorkflowDetail | undefined>(["workflow", workflowId], (current) => (
+        current ? { ...current, status: "cancelled", pause_state: null, current_phase: "done" } : current
+      ));
+      qc.invalidateQueries({ queryKey: ["workflow", workflowId] });
+      qc.invalidateQueries({ queryKey: ["workflows"] });
     },
   });
 }

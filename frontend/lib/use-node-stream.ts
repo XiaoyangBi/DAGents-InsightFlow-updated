@@ -54,6 +54,56 @@ function fallbackNode(activeNode: AgentNodeName | null): AgentNodeName {
   return activeNode ?? "review";
 }
 
+function buildProgressStageLabel(stage: string): string {
+  const labels: Record<string, string> = {
+    validate_scope: "范围校验",
+    search_unavailable: "搜索未配置",
+    resolve_competitors: "竞品解析",
+    resolved_competitors: "竞品确认",
+    insufficient_competitors: "竞品不足",
+    plan_queries: "查询规划",
+    execute_main_plan: "执行主查询",
+    search_product: "联网检索",
+    evaluate_coverage_gap: "覆盖评估",
+    execute_replan: "补救检索",
+    search_service_unavailable: "搜索服务不可用",
+    source_coverage_warning: "来源覆盖不足",
+    collection_complete: "采集完成",
+    structured_output_fallback: "结构化输出修复",
+    prepare_context: "整理上下文",
+    run_analysis: "启动分析",
+    prepare_subnode: "准备子节点",
+    analyze_feature_dimension: "分析维度",
+    feature_dimension_fallback: "维度回退",
+    feature_dimension_complete: "维度完成",
+    gtm_analysis_fallback: "增长分析回退",
+    subnode_complete: "子节点完成",
+  };
+  return labels[stage] || stage;
+}
+
+function buildNodeErrorMessage(payload: Record<string, unknown> | undefined): string {
+  const errorCode = String(payload?.error_code || "");
+  const errorMessage = String(payload?.error_message || "").trim();
+  const retryCount = Number(payload?.retry_count || 0);
+  const maxRetries = Number(payload?.max_retries || 0);
+
+  if (errorCode === "TimeoutError") {
+    if (retryCount > 0 && maxRetries > 0 && retryCount < maxRetries) {
+      return `执行超时，正在进行第 ${retryCount + 1} 次重试`;
+    }
+    return "执行超时";
+  }
+
+  if (errorMessage) {
+    return `执行失败：${errorMessage}`;
+  }
+  if (errorCode) {
+    return `执行失败：${errorCode}`;
+  }
+  return "执行失败：未知错误";
+}
+
 function buildNodeStartMessage(node: AgentNodeName, payload: Record<string, unknown> | undefined): string {
   const summary = payload?.input_summary as Record<string, unknown> | undefined;
   if (!summary) return "开始执行该节点";
@@ -66,11 +116,11 @@ function buildNodeStartMessage(node: AgentNodeName, payload: Record<string, unkn
 
   switch (node) {
     case "information_collection":
-      return `开始采集信息：目标产品「${target || "未知"}」，竞品 ${competitors ?? "?"} 个`;
+      return `开始采集信息：围绕你的产品「${target || "未知"}」调研竞品 ${competitors ?? "?"} 个`;
     case "analysis":
       return `开始多维分析：${products ?? "?"} 个产品，${sources ?? "?"} 条来源`;
     case "report_writing":
-      return `开始撰写报告：目标产品「${target || "未知"}」`;
+      return `开始撰写报告：围绕你的产品「${target || "未知"}」整理洞见`;
     case "review":
       return `开始审查：${phase === "reviewing" ? "评估报告质量" : "进入审查阶段"}`;
     default:
@@ -148,7 +198,7 @@ function buildToolCallMessage(payload: Record<string, unknown> | undefined): str
   }
   if (tool === "competitor_resolver") {
     const product = String(payload?.target_product || "");
-    return `为目标产品「${product}」解析竞品实体`;
+    return `为你的产品「${product}」解析竞品实体`;
   }
   return "";
 }
@@ -199,7 +249,15 @@ function buildLlmResponseMessage(
     }
     case "report_writing": {
       const sections = payload?.sections_count as number | undefined;
-      if (sections !== undefined) parts.push(`生成 ${sections} 个章节`);
+      if (task.includes("report_writing:outline")) {
+        parts.push("报告大纲已生成");
+      } else if (task.includes("report_writing:section")) {
+        parts.push(
+          sections === 1 ? "当前章节已生成，继续写后续章节" : `当前批次已生成 ${sections} 个章节`,
+        );
+      } else if (sections !== undefined) {
+        parts.push(`生成 ${sections} 个章节`);
+      }
       break;
     }
     case "review": {
@@ -237,7 +295,7 @@ function eventToEntry(
       return makeEntry(
         node,
         event.event_type,
-        String(payload?.stage || "progress"),
+        buildProgressStageLabel(String(payload?.stage || "progress")),
         String(payload?.message || ""),
         createdAt,
         (payload?.level as NodeProgressLevel) || "info",
@@ -268,7 +326,7 @@ function eventToEntry(
         node,
         event.event_type,
         "node_error",
-        `执行失败：${String(payload?.error_message || "未知错误")}`,
+        buildNodeErrorMessage(payload),
         createdAt,
         "error",
         event.seq,

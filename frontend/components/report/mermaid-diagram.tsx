@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
+import { Button } from "@/components/ui/button";
 
 interface Props {
   chart: string;
@@ -9,7 +10,14 @@ interface Props {
 export function MermaidDiagram({ chart }: Props) {
   const [svg, setSvg] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [stopped, setStopped] = useState(false);
   const elementId = useId().replace(/:/g, "");
+
+  useEffect(() => {
+    setStopped(false);
+    setSvg("");
+    setError(null);
+  }, [chart]);
 
   useEffect(() => {
     let active = true;
@@ -34,14 +42,28 @@ export function MermaidDiagram({ chart }: Props) {
       }
     }
 
-    if (chart.trim()) {
+    if (chart.trim() && !stopped) {
       void renderChart();
     }
 
     return () => {
       active = false;
     };
-  }, [chart, elementId]);
+  }, [chart, elementId, stopped]);
+
+  if (stopped) {
+    return (
+      <div className="my-4 rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <p className="text-sm font-medium text-[var(--text-primary)]">已停止 canvas 生成</p>
+          <Button type="button" size="sm" variant="outline" onClick={() => setStopped(false)}>
+            重新生成
+          </Button>
+        </div>
+        <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-[var(--text-secondary)]">{chart}</pre>
+      </div>
+    );
+  }
 
   if (error) {
     return (
@@ -55,8 +77,13 @@ export function MermaidDiagram({ chart }: Props) {
 
   if (!svg) {
     return (
-      <div className="my-4 rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4 text-sm text-[var(--text-muted)]">
-        正在渲染流程图...
+      <div className="my-4 rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-[var(--text-muted)]">正在渲染流程图...</p>
+          <Button type="button" size="sm" variant="outline" onClick={() => setStopped(true)}>
+            停止生成
+          </Button>
+        </div>
       </div>
     );
   }

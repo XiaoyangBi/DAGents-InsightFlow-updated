@@ -44,7 +44,13 @@ async def interview_stream(
 
     async def event_generator():
         try:
-            async for chunk in stream_interview_response(db, uuid.UUID(workflow_id), data.user_message):
+            async for chunk in stream_interview_response(
+                db,
+                uuid.UUID(workflow_id),
+                data.user_message,
+                thinking_enabled=data.thinking_enabled,
+                analysis_preferences=data.analysis_preferences,
+            ):
                 yield f"data: {chunk}\n\n"
         except asyncio.TimeoutError:
             logger.exception("Interview response timed out for workflow %s", workflow_id)

@@ -27,6 +27,8 @@ from langgraph.errors import GraphInterrupt
 from sqlalchemy import select, func as sa_func
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.config import get_settings
+from app.context.assembler import ContextAssembler
 from app.core.dependency.checkpointer import get_checkpointer
 from app.core.competitive_template import CompetitiveAnalysisTemplate, make_initial_data
 from app.core.pause_service import extract_interrupt_payload, make_pause_state, persist_pause, resolve_pause
@@ -37,6 +39,8 @@ from app.db.models.workflow_run import WorkflowRun
 from app.db.queries.workflow_queries import get_workflow_by_uuid
 from app.db.session import async_session_factory
 from app.exceptions import AppException
+from app.memory.backend.base import NullMemoryBackend
+from app.retrieval.backend.base import NullRetrieverBackend
 from app.schemas.decision import DecisionRequest
 from app.schemas.event import EventType
 from app.services.event_service import EventLogger
@@ -196,6 +200,7 @@ def _make_runtime(db, workflow, run, event_logger, checkpointer) -> GraphRuntime
     Returns:
         已配置的 GraphRuntime 实例
     """
+    settings = get_settings()
     return GraphRuntime(
         template=CompetitiveAnalysisTemplate,
         db=db,
@@ -205,10 +210,26 @@ def _make_runtime(db, workflow, run, event_logger, checkpointer) -> GraphRuntime
         thread_id=run.thread_id,
         event_logger=event_logger,
         checkpointer=checkpointer,
+        context_assembler=ContextAssembler(
+            memory_backend=NullMemoryBackend(settings.MEMORY_BACKEND),
+            retriever_backend=NullRetrieverBackend(settings.RETRIEVER_BACKEND),
+        ),
     )
 
 
 # ── 图结果处理 ───────────────────────────────────────────────────────────
+
+async def _respect_external_cancellation(workflow, run, db) -> bool:
+    await db.refresh(workflow)
+    if workflow.status != "cancelled":
+        return False
+    await db.refresh(run)
+    if run.status != "cancelled":
+        run.status = "cancelled"
+        run.completed_at = datetime.now(timezone.utc)
+        run.error_message = workflow.error_message or "用户手动停止生成"
+        await db.commit()
+    return True
 
 async def _handle_graph_result(workflow, run, db, event_logger: EventLogger, final_state: dict) -> None:
     """处理图执行完成后的最终状态。
@@ -225,6 +246,8 @@ async def _handle_graph_result(workflow, run, db, event_logger: EventLogger, fin
         event_logger: EventLogger 实例
         final_state:  GraphRuntime.ainvoke/aresume/arecover 的返回值
     """
+    if await _respect_external_cancellation(workflow, run, db):
+        return
     pause_data = extract_interrupt_payload(final_state)
     if pause_data is not None:
         workflow.status = "paused"
@@ -288,6 +311,8 @@ async def _handle_graph_exception(workflow, run, db, event_logger: EventLogger, 
         event_logger: EventLogger 实例
         e:            捕获的异常
     """
+    if await _respect_external_cancellation(workflow, run, db):
+        return
     if isinstance(e, GraphInterrupt):
         pause_data = e.args[0] if e.args else {}
         workflow.status = "paused"

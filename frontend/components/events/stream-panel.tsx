@@ -18,10 +18,10 @@ const NODE_LABELS: Record<AgentNodeName, string> = {
 };
 
 const LEVEL_STYLES: Record<string, string> = {
-  info: "border-sky-500/20 bg-sky-500/10 text-sky-700 dark:text-sky-200",
-  success: "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
-  warning: "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-200",
-  error: "border-rose-500/20 bg-rose-500/10 text-rose-700 dark:text-rose-200",
+  info: "border-sky-500/20 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+  success: "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  warning: "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  error: "border-rose-500/20 bg-rose-500/10 text-rose-700 dark:text-rose-300",
 };
 
 interface Props {
@@ -48,8 +48,8 @@ export function StreamPanel({ activeNode, selectedNode, entries, onSelectNode }:
   const currentEntries = selectedNode ? entries[selectedNode] || [] : [];
 
   return (
-    <div className="flex-1 flex flex-col min-h-0">
-      <div className="px-5 py-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] space-y-3">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="space-y-3 border-b border-[var(--border)] bg-[var(--bg-panel)] px-5 py-3">
         <div className="flex items-center gap-2">
           {activeNode ? (
             <>
@@ -74,10 +74,10 @@ export function StreamPanel({ activeNode, selectedNode, entries, onSelectNode }:
               <button
                 key={node}
                 onClick={() => onSelectNode(node)}
-                className={`rounded-full border px-2.5 py-1 text-[11px] transition-colors ${
+                className={`rounded-full border px-2.5 py-1 text-[11px] transition-all ${
                   isSelected
-                    ? "border-emerald-500/40 bg-emerald-500/10 text-[var(--text-primary)]"
-                    : "border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                    ? "border-emerald-500/35 bg-emerald-500/10 text-[var(--text-primary)]"
+                    : "border-[var(--border)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
                 }`}
               >
                 {NODE_LABELS[node]}
@@ -89,12 +89,12 @@ export function StreamPanel({ activeNode, selectedNode, entries, onSelectNode }:
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-5 space-y-3">
+      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto p-5">
         {currentEntries.length > 0 ? (
           currentEntries.map((entry, index) => (
             <div
               key={`${entry.node}-${entry.seq ?? index}-${entry.created_at}`}
-              className={`rounded-xl border p-5 ${LEVEL_STYLES[entry.level] || LEVEL_STYLES.info}`}
+              className={`rounded-2xl border p-5 shadow-sm ${LEVEL_STYLES[entry.level] || LEVEL_STYLES.info}`}
             >
               <div className="flex items-center justify-between gap-3 text-[10px] uppercase tracking-wide opacity-80">
                 <span>{entry.stage.replaceAll("_", " ")}</span>

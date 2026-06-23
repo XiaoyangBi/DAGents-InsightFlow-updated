@@ -21,6 +21,21 @@ class ReportSectionBatch(BaseModel):
     sections: list[ReportSection]
 
 
+class ReportOutlineSection(BaseModel):
+    """Lightweight plan for one report section."""
+    heading: str
+    objective: str = ""
+    key_points: list[str] = []
+    related_artifacts: list[str] = []
+
+
+class ReportOutline(BaseModel):
+    """Outline-first plan for lightweight ReAct report writing."""
+    title: str
+    executive_summary: str
+    sections: list[ReportOutlineSection]
+
+
 ANALYSIS_HEADINGS = [
     "分析目标",
     "产品定位判断",
@@ -42,6 +57,64 @@ REPORT_HEADINGS = [
     "对当前项目的启示",
     "行动建议",
 ]
+
+SECTION_ARTIFACTS = {
+    "分析目标": ["config", "collection_errors", "search_per_summary"],
+    "结论先行": [
+        "swot",
+        "feature_matrix",
+        "pricing_comparison",
+        "user_sentiment",
+        "positioning_analysis",
+        "competitor_role_analysis",
+        "gtm_analysis",
+        "search_per_summary",
+    ],
+    "产品定位判断": ["config", "positioning_analysis", "feature_matrix", "search_coverage"],
+    "竞品范围与角色判断": ["config", "competitor_role_analysis", "search_coverage", "search_per_summary"],
+    "关键发现": ["feature_matrix", "pricing_comparison", "user_sentiment", "swot", "search_coverage"],
+    "成功与失败原因拆解": ["swot", "user_sentiment", "positioning_analysis", "feature_matrix"],
+    "上市与增长拆解": ["gtm_analysis", "positioning_analysis", "search_coverage", "search_per_summary"],
+    "关键流程图": ["gtm_analysis", "positioning_analysis", "feature_matrix", "search_per_summary"],
+    "对当前项目的启示": [
+        "config",
+        "swot",
+        "feature_matrix",
+        "pricing_comparison",
+        "positioning_analysis",
+        "search_per_summary",
+    ],
+    "行动建议": [
+        "config",
+        "swot",
+        "feature_matrix",
+        "pricing_comparison",
+        "positioning_analysis",
+        "search_per_summary",
+    ],
+}
+SECTION_SOURCE_KEYWORDS = {
+    "产品定位判断": ["overview", "official", "目标用户", "使用场景", "核心问题", "解决方案", "支撑点", "position"],
+    "竞品范围与角色判断": ["overview", "official", "comparison", "role", "benchmark", "core"],
+    "关键发现": ["overview", "official", "review", "comparison", "dimension:"],
+    "成功与失败原因拆解": ["review", "community", "feedback", "complaint", "praise", "dimension:"],
+    "上市与增长拆解": ["上市", "增长", "news", "campaign", "go-to-market", "dimension:"],
+    "关键流程图": ["official", "overview", "dimension:", "growth", "launch", "flow"],
+}
+HEADINGS_REQUIRE_SECTION_CITATIONS = {
+    "产品定位判断",
+    "竞品范围与角色判断",
+    "关键发现",
+    "成功与失败原因拆解",
+    "上市与增长拆解",
+    "关键流程图",
+}
+EVIDENCE_BOUNDARY_MARKERS = (
+    "当前采集结果未覆盖",
+    "证据不足",
+    "证据边界",
+    "当前来源不足",
+)
 
 
 REPORT_SYSTEM_PROMPT = """你是专业中文商业分析报告撰写助手。请基于输入的结构化竞品分析撰写指定章节。
@@ -72,6 +145,16 @@ REPORT_SYSTEM_PROMPT = """你是专业中文商业分析报告撰写助手。请
 - 如果当前采集结果不足以支撑结论，要明确指出证据边界，不要假装确定。
 """
 
+REPORT_OUTLINE_SYSTEM_PROMPT = """你是专业中文商业分析报告规划助手。请先生成报告大纲，不要直接写正文。
+要求：
+- 只返回合法 JSON，不要 Markdown，不要解释。
+- title 与 executive_summary 要服务于当前分析问题和决策场景。
+- sections 必须覆盖 requested_headings 中的全部标题，且顺序一致。
+- 每个 section 只输出 heading、objective、key_points、related_artifacts。
+- objective 说明该节要回答什么问题；key_points 列出 2-4 个要点；related_artifacts 只写输入里真实存在且相关的 artifact 名称。
+- 如果某节证据可能不足，也要在 objective 或 key_points 中提醒后续写作时明确证据边界。
+"""
+
 
 class ReportAgent(BaseAgent):
     node_name = "report_writing"
@@ -79,7 +162,7 @@ class ReportAgent(BaseAgent):
     async def run(self, state: dict, ctx: AgentContext) -> dict:
         """将结构化分析产物组装为 Markdown 竞品分析报告。
 
-        正式报告分三批使用模型原生 structured output 生成。任一批失败时
+        正式报告采用“先大纲、后逐节”的轻量 ReAct 生成。任一步失败时
         直接向上传播异常，由节点重试机制处理，禁止交付通用 fallback 报告。
         """
         config = state.get("config", {})
@@ -126,7 +209,7 @@ class ReportAgent(BaseAgent):
             await self.emit_progress(
                 ctx,
                 stage="draft_report",
-                message="正在分三批撰写分析、决策与补充章节。",
+                message="正在先生成大纲，再按章节执行轻量 ReAct 写作与校验。",
             )
             report = await self._generate_report_batches(
                 state=state,
@@ -176,74 +259,44 @@ class ReportAgent(BaseAgent):
         source_coverage_issue: str | None,
         citations: list[Citation],
     ) -> ReportOutput:
-        """Generate three bounded structured batches and assemble one report."""
+        """Generate one outline, then write sections with lightweight section-level ReAct."""
         sources = raw_data_to_context(raw_data, max_items_per_product=2)
         shared = {
             "config": config,
             "collection_errors": collection_errors,
             "source_coverage_issue": source_coverage_issue,
         }
-
-        analysis_batch = await self._generate_section_batch(
+        outline = await self._generate_report_outline(
             ctx=ctx,
-            batch_name="analysis",
-            headings=ANALYSIS_HEADINGS,
-            payload={
-                **shared,
-                "feature_matrix": state.get("feature_matrix"),
-                "pricing_comparison": state.get("pricing_comparison"),
-                "user_sentiment": state.get("user_sentiment"),
-                "positioning_analysis": state.get("positioning_analysis"),
-                "competitor_role_analysis": state.get("competitor_role_analysis"),
-                "sources_by_product": sources,
-            },
+            target=target,
+            state=state,
+            shared=shared,
         )
-        decision_draft = await self.invoke_structured_llm(
-            REPORT_SYSTEM_PROMPT,
-            {
-                **shared,
-                "requested_headings": DECISION_HEADINGS,
-                "analysis_sections": [
-                    section.model_dump(mode="json") for section in analysis_batch
-                ],
-                "pricing_comparison": state.get("pricing_comparison"),
-                "swot": state.get("swot"),
-            },
-            ReportDraft,
-            ctx,
-            "report_writing:decision",
-            request_meta={"target_product": target, "batch": "decision"},
-        )
-        decision_sections = self._validate_sections(
-            decision_draft.sections, DECISION_HEADINGS, "decision"
-        )
-        await self._log_batch_response(ctx, "decision", len(decision_sections))
+        outline_by_heading = {section.heading: section for section in outline.sections}
+        ordered_sections: list[ReportSection] = []
+        completed_sections: list[ReportSection] = []
+        for heading in REPORT_HEADINGS:
+            section = await self._generate_section_with_light_react(
+                ctx=ctx,
+                heading=heading,
+                state=state,
+                shared=shared,
+                raw_data=raw_data,
+                sources=sources,
+                outline=outline_by_heading[heading],
+                completed_sections=completed_sections,
+            )
+            ordered_sections.append(section)
+            completed_sections.append(section)
 
-        supplement_batch = await self._generate_section_batch(
-            ctx=ctx,
-            batch_name="supplement",
-            headings=SUPPLEMENT_HEADINGS,
-            payload={
-                **shared,
-                "positioning_analysis": state.get("positioning_analysis"),
-                "gtm_analysis": state.get("gtm_analysis"),
-                "analysis_sections": [
-                    section.model_dump(mode="json") for section in analysis_batch
-                ],
-            },
-        )
-
-        all_sections = analysis_batch + decision_sections + supplement_batch
-        sections_by_heading = {section.heading: section for section in all_sections}
-        ordered_sections = [sections_by_heading[heading] for heading in REPORT_HEADINGS]
         report = ReportOutput(
-            title=decision_draft.title,
-            executive_summary=decision_draft.executive_summary,
+            title=outline.title,
+            executive_summary=outline.executive_summary,
             sections=ordered_sections,
             citations=citations,
             full_markdown=self._render_markdown(
-                decision_draft.title,
-                decision_draft.executive_summary,
+                outline.title,
+                outline.executive_summary,
                 ordered_sections,
                 citations,
             ),
@@ -252,10 +305,169 @@ class ReportAgent(BaseAgent):
         await self.emit_progress(
             ctx,
             stage="report_draft_ready",
-            message="三批结构化章节均已生成，正在组装最终报告。",
+            message="章节级轻量 ReAct 已完成，正在组装最终报告。",
             level="success",
         )
         return report
+
+    async def _generate_report_outline(
+        self,
+        *,
+        ctx: AgentContext,
+        target: str,
+        state: dict,
+        shared: dict,
+    ) -> ReportOutline:
+        artifact_inventory = {
+            "feature_matrix": bool(state.get("feature_matrix")),
+            "pricing_comparison": bool(state.get("pricing_comparison")),
+            "user_sentiment": bool(state.get("user_sentiment")),
+            "positioning_analysis": bool(state.get("positioning_analysis")),
+            "competitor_role_analysis": bool(state.get("competitor_role_analysis")),
+            "gtm_analysis": bool(state.get("gtm_analysis")),
+            "swot": bool(state.get("swot")),
+            "search_coverage": bool(state.get("search_coverage")),
+            "search_per_summary": bool((state.get("search_per") or {}).get("summary")),
+        }
+        outline = await self.invoke_structured_llm(
+            REPORT_OUTLINE_SYSTEM_PROMPT,
+            {
+                **shared,
+                "target_product": target,
+                "requested_headings": REPORT_HEADINGS,
+                "artifact_inventory": artifact_inventory,
+            },
+            ReportOutline,
+            ctx,
+            "report_writing:outline",
+            request_meta={"target_product": target, "phase": "outline"},
+        )
+        sections = self._validate_outline_sections(outline.sections)
+        await self._log_batch_response(ctx, "outline", len(sections))
+        return outline.model_copy(update={"sections": sections})
+
+    async def _generate_section_with_light_react(
+        self,
+        *,
+        ctx: AgentContext,
+        heading: str,
+        state: dict,
+        shared: dict,
+        raw_data: dict,
+        sources: dict,
+        outline: ReportOutlineSection,
+        completed_sections: list[ReportSection],
+    ) -> ReportSection:
+        section_payload, allowed_urls = self._build_section_payload(
+            heading=heading,
+            state=state,
+            shared=shared,
+            raw_data=raw_data,
+            sources=sources,
+            outline=outline,
+            completed_sections=completed_sections,
+        )
+        await self.emit_progress(
+            ctx,
+            stage="write_section",
+            message=f"正在撰写章节《{heading}》，仅使用相关 artifact 与来源上下文。",
+        )
+        batch = await self.invoke_structured_llm(
+            REPORT_SYSTEM_PROMPT,
+            section_payload,
+            ReportSectionBatch,
+            ctx,
+            "report_writing:section",
+            request_meta={"heading": heading, "repair": False},
+        )
+        section = self._validate_sections(batch.sections, [heading], f"section:{heading}")[0]
+        section = await self._repair_section_once_if_needed(
+            ctx=ctx,
+            heading=heading,
+            section=section,
+            payload=section_payload,
+            allowed_urls=allowed_urls,
+            completed_sections=completed_sections,
+        )
+        await self._log_batch_response(ctx, f"section:{heading}", 1)
+        return section
+
+    async def _repair_section_once_if_needed(
+        self,
+        *,
+        ctx: AgentContext,
+        heading: str,
+        section: ReportSection,
+        payload: dict,
+        allowed_urls: list[str],
+        completed_sections: list[ReportSection],
+    ) -> ReportSection:
+        section = self._constrain_section_source_refs(section, allowed_urls)
+        section = self._backfill_section_source_refs(section, allowed_urls, payload)
+        issues = self._check_section_quality(
+            heading=heading,
+            section=section,
+            allowed_urls=allowed_urls,
+            completed_sections=completed_sections,
+        )
+        if not issues:
+            return section
+        await self.emit_progress(
+            ctx,
+            stage="repair_section",
+            message=f"章节《{heading}》触发 citation / consistency 检查，正在执行一次 retrieve-or-reason 补救。",
+            level="warning",
+        )
+        repaired = await self.invoke_structured_llm(
+            REPORT_SYSTEM_PROMPT,
+            {
+                **payload,
+                "repair_issues": issues,
+                "repair_instruction": (
+                    "只重写 requested_headings 指定的当前章节。优先使用 section_context.sources_by_product 中的真实来源补齐引用；"
+                    "如果仍无法支撑，请明确写出当前采集结果未覆盖或证据边界。"
+                ),
+            },
+            ReportSectionBatch,
+            ctx,
+            "report_writing:section_repair",
+            request_meta={"heading": heading, "repair": True},
+        )
+        repaired_section = self._validate_sections(
+            repaired.sections, [heading], f"section_repair:{heading}"
+        )[0]
+        repaired_section = self._constrain_section_source_refs(repaired_section, allowed_urls)
+        repaired_section = self._backfill_section_source_refs(repaired_section, allowed_urls, payload)
+        remaining_issues = self._check_section_quality(
+            heading=heading,
+            section=repaired_section,
+            allowed_urls=allowed_urls,
+            completed_sections=completed_sections,
+        )
+        if remaining_issues:
+            raise ValueError(
+                f"Report section '{heading}' failed citation/consistency checks after single repair: {remaining_issues}"
+            )
+        return repaired_section
+
+    @staticmethod
+    def _constrain_section_source_refs(section: ReportSection, allowed_urls: list[str]) -> ReportSection:
+        """将章节引用裁剪到当前章节允许的 URL 白名单内。
+
+        LLM 在“结论先行”等章节中容易引用全局候选来源，而不是当前 section
+        payload 暴露的 allowed_source_refs。这里先做一次收敛，避免因为越界
+        引用导致决策章节反复失败；真正强制要求带 citation 的章节会在裁剪后
+        继续走 missing/repair 校验。
+        """
+        if not section.source_refs:
+            return section
+        if not allowed_urls:
+            return section.model_copy(update={"source_refs": []})
+        allowed = set(allowed_urls)
+        filtered = [url for url in section.source_refs if url in allowed]
+        if filtered == section.source_refs:
+            return section
+        return section.model_copy(update={"source_refs": filtered})
 
     async def _generate_section_batch(
         self,
@@ -276,6 +488,222 @@ class ReportAgent(BaseAgent):
         sections = self._validate_sections(batch.sections, headings, batch_name)
         await self._log_batch_response(ctx, batch_name, len(sections))
         return sections
+
+    def _validate_outline_sections(
+        self,
+        sections: list[ReportOutlineSection],
+    ) -> list[ReportOutlineSection]:
+        by_heading = {section.heading: section for section in sections}
+        if len(by_heading) != len(sections):
+            raise ValueError("Report outline contains duplicate headings")
+        missing = [heading for heading in REPORT_HEADINGS if heading not in by_heading]
+        unexpected = [heading for heading in by_heading if heading not in REPORT_HEADINGS]
+        if missing or unexpected:
+            raise ValueError(
+                f"Report outline headings mismatch: missing={missing}, unexpected={unexpected}"
+            )
+        normalized: list[ReportOutlineSection] = []
+        for heading in REPORT_HEADINGS:
+            section = by_heading[heading]
+            normalized.append(section.model_copy(update={
+                "objective": str(section.objective or "").strip(),
+                "key_points": [str(item).strip() for item in (section.key_points or []) if str(item).strip()],
+                "related_artifacts": [
+                    item for item in section.related_artifacts or []
+                    if item in SECTION_ARTIFACTS.get(heading, [])
+                ],
+            }))
+        return normalized
+
+    def _build_section_payload(
+        self,
+        *,
+        heading: str,
+        state: dict,
+        shared: dict,
+        raw_data: dict,
+        sources: dict,
+        outline: ReportOutlineSection,
+        completed_sections: list[ReportSection],
+    ) -> tuple[dict, list[str]]:
+        section_sources = self._select_section_sources(heading, raw_data, sources)
+        allowed_urls = sorted({
+            item.get("url")
+            for items in section_sources.values()
+            for item in items
+            if isinstance(item, dict) and item.get("url")
+        })
+        artifact_context = self._build_section_artifact_context(heading, state, shared)
+        previous_sections = [
+            {
+                "heading": section.heading,
+                "summary": self._summarize_section_content(section.content),
+                "source_refs": section.source_refs,
+            }
+            for section in completed_sections[-3:]
+        ]
+        payload = {
+            **shared,
+            "requested_headings": [heading],
+            "outline_title": state.get("report", {}).get("title") if isinstance(state.get("report"), dict) else "",
+            "outline_section": outline.model_dump(mode="json"),
+            "allowed_artifacts": SECTION_ARTIFACTS.get(heading, []),
+            "section_context": {
+                "artifacts": artifact_context,
+                "sources_by_product": section_sources,
+                "allowed_source_refs": allowed_urls,
+                "suggested_source_refs": self._suggest_section_source_refs(
+                    artifact_context,
+                    allowed_urls,
+                ),
+                "previous_sections": previous_sections,
+            },
+        }
+        return payload, allowed_urls
+
+    @staticmethod
+    def _collect_evidence_urls(value: object) -> list[str]:
+        urls: list[str] = []
+        seen: set[str] = set()
+
+        def visit(node: object) -> None:
+            if isinstance(node, dict):
+                url = node.get("url")
+                if isinstance(url, str) and url and url not in seen:
+                    seen.add(url)
+                    urls.append(url)
+                refs = node.get("evidence_refs")
+                if isinstance(refs, list):
+                    for ref in refs:
+                        visit(ref)
+                for item in node.values():
+                    if isinstance(item, (dict, list)):
+                        visit(item)
+            elif isinstance(node, list):
+                for item in node:
+                    visit(item)
+
+        visit(value)
+        return urls
+
+    def _suggest_section_source_refs(
+        self,
+        artifact_context: dict,
+        allowed_urls: list[str],
+        limit: int = 4,
+    ) -> list[str]:
+        if not allowed_urls:
+            return []
+        allowed = set(allowed_urls)
+        inferred = [
+            url for url in self._collect_evidence_urls(artifact_context)
+            if url in allowed
+        ]
+        if inferred:
+            return inferred[:limit]
+        return allowed_urls[: min(limit, len(allowed_urls))]
+
+    @staticmethod
+    def _backfill_section_source_refs(
+        section: ReportSection,
+        allowed_urls: list[str],
+        payload: dict,
+    ) -> ReportSection:
+        if section.source_refs or not allowed_urls:
+            return section
+        section_context = payload.get("section_context") if isinstance(payload, dict) else {}
+        suggested = section_context.get("suggested_source_refs") if isinstance(section_context, dict) else []
+        if not isinstance(suggested, list):
+            suggested = []
+        fallback = [
+            url for url in suggested
+            if isinstance(url, str) and url in set(allowed_urls)
+        ]
+        if not fallback:
+            fallback = allowed_urls[: min(2, len(allowed_urls))]
+        return section.model_copy(update={"source_refs": fallback})
+
+    def _build_section_artifact_context(self, heading: str, state: dict, shared: dict) -> dict:
+        artifact_keys = SECTION_ARTIFACTS.get(heading, [])
+        available = {
+            "config": shared.get("config"),
+            "collection_errors": shared.get("collection_errors"),
+            "source_coverage_issue": shared.get("source_coverage_issue"),
+            "feature_matrix": state.get("feature_matrix"),
+            "pricing_comparison": state.get("pricing_comparison"),
+            "user_sentiment": state.get("user_sentiment"),
+            "positioning_analysis": state.get("positioning_analysis"),
+            "competitor_role_analysis": state.get("competitor_role_analysis"),
+            "gtm_analysis": state.get("gtm_analysis"),
+            "swot": state.get("swot"),
+            "search_coverage": state.get("search_coverage"),
+            "search_per_summary": (state.get("search_per") or {}).get("summary"),
+        }
+        return {
+            key: available.get(key)
+            for key in artifact_keys
+            if available.get(key) not in (None, {}, [])
+        }
+
+    def _select_section_sources(self, heading: str, raw_data: dict, default_sources: dict) -> dict:
+        keywords = [keyword.lower() for keyword in SECTION_SOURCE_KEYWORDS.get(heading, [])]
+        if not keywords:
+            return {}
+        selected: dict[str, list[dict]] = {}
+        for product, items in raw_data.items():
+            if not isinstance(items, list):
+                continue
+            matches: list[dict] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                intents = item.get("source_intents") or [item.get("source_intent")]
+                haystack = " ".join(
+                    str(part).lower()
+                    for part in [
+                        item.get("title", ""),
+                        item.get("snippet", ""),
+                        item.get("content_summary", ""),
+                        " ".join(intent for intent in intents if intent),
+                    ]
+                )
+                if any(keyword in haystack for keyword in keywords):
+                    matches.append(item)
+                if len(matches) >= 2:
+                    break
+            if matches:
+                selected[product] = matches
+        if selected:
+            return selected
+        return {}
+
+    def _check_section_quality(
+        self,
+        *,
+        heading: str,
+        section: ReportSection,
+        allowed_urls: list[str],
+        completed_sections: list[ReportSection],
+    ) -> list[str]:
+        issues: list[str] = []
+        invalid_refs = [url for url in section.source_refs if url not in allowed_urls]
+        if invalid_refs:
+            issues.append(f"invalid_source_refs={invalid_refs}")
+        has_boundary = any(marker in section.content for marker in EVIDENCE_BOUNDARY_MARKERS)
+        if heading in HEADINGS_REQUIRE_SECTION_CITATIONS and allowed_urls and not section.source_refs:
+            issues.append("missing_section_citations")
+        if heading in HEADINGS_REQUIRE_SECTION_CITATIONS and not allowed_urls and not has_boundary:
+            issues.append("missing_evidence_boundary")
+        if heading in {"对当前项目的启示", "行动建议"} and completed_sections and len(section.content.strip()) < 40:
+            issues.append("insufficient_section_detail")
+        return issues
+
+    @staticmethod
+    def _summarize_section_content(content: str, limit: int = 160) -> str:
+        compact = re.sub(r"\s+", " ", str(content or "")).strip()
+        if len(compact) <= limit:
+            return compact
+        return compact[:limit].rstrip() + "..."
 
     async def _log_batch_response(
         self, ctx: AgentContext, batch_name: str, sections_count: int
@@ -376,25 +804,57 @@ class ReportAgent(BaseAgent):
             content,
             flags=re.IGNORECASE,
         )
-        opening = re.search(r"```mermaid\n", content, flags=re.IGNORECASE)
-        if not opening:
-            return content
+        content = re.sub(r"([^\n])```", r"\1\n```", content)
+        content = re.sub(r"```(?!mermaid)([^\n`])", r"```\n\1", content, flags=re.IGNORECASE)
+        matches = list(re.finditer(r"```mermaid\n(.*?)\n```", content, flags=re.DOTALL | re.IGNORECASE))
+        prose = re.sub(r"```mermaid\n.*?\n```", "", content, flags=re.DOTALL | re.IGNORECASE).strip()
 
-        closing_start = content.find("```", opening.end())
-        if closing_start == -1:
-            return content
+        chart = ""
+        if matches:
+            chart = matches[0].group(1).strip()
+        else:
+            inferred = re.search(
+                r"((?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)\b[\s\S]*)",
+                content,
+                flags=re.IGNORECASE,
+            )
+            if inferred:
+                chart = inferred.group(1).strip()
+                prose = content[:inferred.start()].strip()
 
-        chart = content[opening.end():closing_start].strip()
+        chart = ReportAgent._normalize_mermaid_chart(chart)
+        if not ReportAgent._is_valid_mermaid_chart(chart):
+            chart = "flowchart TD\n  A[整理主要结论] --> B[补齐关键证据]\n  B --> C[输出可复核流程图]"
+            if not prose:
+                prose = "当前流程图由系统自动修复，请结合正文和引用继续复核。"
+
+        normalized_block = f"```mermaid\n{chart}\n```"
+        parts = [part for part in (prose, normalized_block) if part]
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _normalize_mermaid_chart(chart: str) -> str:
+        chart = str(chart or "").strip()
+        chart = re.sub(r"^```mermaid\s*", "", chart, flags=re.IGNORECASE)
+        chart = re.sub(r"\s*```$", "", chart)
         chart = re.sub(
             r"\s+([A-Za-z][A-Za-z0-9_]*)\s*(-->|---)",
             lambda match: f"\n  {match.group(1)} {match.group(2)}",
             chart,
         )
-        normalized_block = f"```mermaid\n{chart}\n```"
-        before = content[:opening.start()].rstrip()
-        after = content[closing_start + 3:].strip()
-        parts = [part for part in (before, normalized_block, after) if part]
-        return "\n\n".join(parts)
+        chart = re.sub(r"\n{3,}", "\n\n", chart)
+        return chart.strip()
+
+    @staticmethod
+    def _is_valid_mermaid_chart(chart: str) -> bool:
+        if not re.match(r"^(?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)\b", chart, flags=re.IGNORECASE):
+            return False
+        if "-->" not in chart and "---" not in chart:
+            return False
+        for opening, closing in (("[", "]"), ("{", "}"), ("(", ")")):
+            if chart.count(opening) != chart.count(closing):
+                return False
+        return True
 
     @staticmethod
     def _validate_mermaid_section(section: ReportSection) -> None:
@@ -407,7 +867,7 @@ class ReportAgent(BaseAgent):
             raise ValueError(
                 "Report section '关键流程图' must contain exactly one valid Mermaid code block"
             )
-        chart = matches[0].strip()
+        chart = ReportAgent._normalize_mermaid_chart(matches[0])
         if not re.match(r"^(?:flowchart|graph)\s+(?:TB|TD|BT|RL|LR)\b", chart, flags=re.IGNORECASE):
             raise ValueError("Mermaid chart must start with a valid flowchart or graph declaration")
         if "-->" not in chart and "---" not in chart:

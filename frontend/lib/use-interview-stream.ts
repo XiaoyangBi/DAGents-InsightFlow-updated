@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import type { InterviewSSEMessage } from "@/types/interview";
+import type { AnalysisPreferences } from "@/lib/analysis-preferences";
 
 interface UseInterviewStreamOptions {
   workflowId: string;
@@ -15,6 +16,8 @@ export function useInterviewStream({ workflowId, token }: UseInterviewStreamOpti
   const sendMessage = useCallback(
     async (
       userMessage: string,
+      thinkingEnabled: boolean,
+      analysisPreferences: AnalysisPreferences,
       onToken: (token: string) => void,
       onConfig: (config: InterviewSSEMessage) => void,
       onComplete: () => void,
@@ -33,7 +36,11 @@ export function useInterviewStream({ workflowId, token }: UseInterviewStreamOpti
               "Content-Type": "application/json",
               Authorization: `Bearer ${token}`,
             },
-            body: JSON.stringify({ user_message: userMessage }),
+            body: JSON.stringify({
+              user_message: userMessage,
+              thinking_enabled: thinkingEnabled,
+              analysis_preferences: analysisPreferences,
+            }),
             signal: controller.signal,
           }
         );

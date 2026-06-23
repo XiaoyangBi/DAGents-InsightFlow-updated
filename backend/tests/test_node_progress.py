@@ -20,6 +20,13 @@ class DummyAgent(BaseAgent):
     node_name = "analysis"
 
 
+class DummySearchPlan(SimpleNamespace):
+    def model_copy(self, update: dict):
+        data = dict(self.__dict__)
+        data.update(update)
+        return DummySearchPlan(**data)
+
+
 def _mock_ctx(node_id: str = "analysis") -> AgentContext:
     return AgentContext(
         workflow_id=uuid.uuid4(),
@@ -117,6 +124,56 @@ async def test_collection_agent_emits_progress_messages():
 
     assert result["collection_errors"]["Notion"]
     assert agent.emit_progress.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_collection_agent_surfaces_quota_exhausted_in_progress_stream():
+    agent = CollectionAgent()
+    agent.emit_progress = AsyncMock()
+    ctx = _mock_ctx("information_collection")
+
+    state = {
+        "config": {
+            "target_product": "微信支付",
+            "product_category": "支付 / 金融服务",
+            "competitors": ["支付宝"],
+            "competitor_count": 1,
+            "focus_dimensions": ["功能", "定价"],
+        },
+    }
+
+    fake_plan = DummySearchPlan(
+        queries=[],
+        strategy_summary="test",
+        model_dump=lambda mode="json": {"queries": []},
+    )
+    fake_resolution = SimpleNamespace(
+        competitors=["支付宝"],
+        dropped=[],
+        added=[],
+        subcategory="支付",
+        query="微信支付 支付宝",
+    )
+
+    with (
+        patch("app.agents.collection_agent.tavily_is_configured", return_value=True),
+        patch("app.agents.collection_agent.AsyncTavilyClient"),
+        patch("app.agents.collection_agent.resolve_competitors", new=AsyncMock(return_value=fake_resolution)),
+        patch("app.agents.collection_agent.build_search_query_plan", new=AsyncMock(return_value=fake_plan)),
+        patch.object(
+            agent,
+            "_collect_for_product_per",
+            new=AsyncMock(side_effect=RuntimeError("This request exceeds your plan's set usage limit")),
+        ),
+    ):
+        result = await agent.run(state, ctx)
+
+    assert result["collection_errors"]["支付宝"]
+    assert any(
+        call.kwargs.get("stage") == "search_service_unavailable"
+        and "配额已耗尽" in call.kwargs.get("message", "")
+        for call in agent.emit_progress.await_args_list
+    )
 
 
 @pytest.mark.asyncio

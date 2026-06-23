@@ -5,6 +5,7 @@ from typing import Any, Protocol
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
+from app.agents.agent_utils import get_provider_compat_kwargs
 from app.config import get_settings
 from app.schemas.workflow import ProductProfile
 
@@ -99,6 +100,7 @@ async def build_product_profile(
             base_url=settings.LLM_BASE_URL,
             model=settings.LLM_MODEL,
             temperature=0,
+            **get_provider_compat_kwargs(),
         )
         response = await llm.ainvoke([
             SystemMessage(content=PROFILE_SYSTEM_PROMPT),

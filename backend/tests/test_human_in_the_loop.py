@@ -147,6 +147,30 @@ class TestReviewRoutePolicy:
         )
         assert decision.next_node == "information_collection"
 
+    def test_human_jump_routes_even_after_review_result_is_cleared(self):
+        decision = ReviewRoutePolicy().decide(
+            {
+                "data": {"review_result": None},
+                "control": {"human_decision": {"action": "jump", "target_node": "information_collection"}},
+                "runtime": {},
+            },
+            CompetitiveAnalysisTemplate.node("review"),
+        )
+        assert decision.action == "route"
+        assert decision.next_node == "information_collection"
+
+    def test_human_structural_action_routes_even_after_review_result_is_cleared(self):
+        decision = ReviewRoutePolicy().decide(
+            {
+                "data": {"review_result": None},
+                "control": {"human_decision": {"action": "replace_competitor", "target_node": "information_collection"}},
+                "runtime": {},
+            },
+            CompetitiveAnalysisTemplate.node("review"),
+        )
+        assert decision.action == "route"
+        assert decision.next_node == "information_collection"
+
     def test_human_jump_invalid_target_falls_back_to_review_agent_target_on_review_node(self):
         decision = ReviewRoutePolicy().decide(
             {
@@ -697,6 +721,38 @@ class TestReviewAgentRuleBased:
         assert "拼多多" in config["insufficient_evidence_competitors"]
         assert applied["decision"]["target_node"] == "report_writing"
         assert "证据不足" in config["extra_requirements"]
+
+    def test_review_fail_pause_policy_jump_to_information_collection_clears_downstream_state(self):
+        from app.core.runtime.policies import ReviewFailPausePolicy
+
+        policy = ReviewFailPausePolicy()
+        applied = policy.apply_decision(
+            {
+                "data": {
+                    "config": {
+                        "target_product": "微信支付提现笔笔省",
+                        "competitors": ["支付宝余额提现"],
+                    },
+                    "raw_data": {"微信支付提现笔笔省": [{"url": "x"}]},
+                    "collection_errors": {"__source_coverage__": "Missing source coverage for: 支付宝余额提现"},
+                    "feature_matrix": {"matrix": [{"feature_name": "旧功能矩阵"}]},
+                    "pricing_comparison": {"plans": [{"product": "支付宝余额提现"}]},
+                    "report": {"title": "旧报告"},
+                    "review_result": {"passed": False},
+                },
+                "control": {},
+            },
+            None,
+            {"action": "jump", "target_node": "information_collection"},
+        )
+
+        assert applied["data"]["raw_data"] == {}
+        assert applied["data"]["collection_errors"] == {}
+        assert applied["data"]["feature_matrix"] is None
+        assert applied["data"]["pricing_comparison"] is None
+        assert applied["data"]["report"] is None
+        assert applied["data"]["review_result"] is None
+        assert applied["data"]["current_phase"] == "collecting"
 
     @pytest.mark.asyncio
     async def test_run_no_pause_when_max_revisions_reached(self):

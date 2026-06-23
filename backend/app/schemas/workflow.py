@@ -170,6 +170,8 @@ def remove_competitors_from_groups(
 
 class WorkflowConfig(BaseModel):
     target_product: str = Field(..., description="目标分析产品名称")
+    active_product_id: str = Field(default="", description="V2 当前主产品标识，可用于长期记忆与研究线程关联")
+    research_thread_id: str = Field(default="", description="V2 当前研究线程标识")
     target_product_status: TargetProductStatus = Field(
         default=TargetProductStatus.LAUNCHED,
         description="目标产品状态；未上线或暂无自有产品时不参与功能、定价与用户情感对比",
@@ -181,6 +183,8 @@ class WorkflowConfig(BaseModel):
     competitor_groups: CompetitorGroups = Field(default_factory=CompetitorGroups, description="按角色分类的竞品列表")
     competitors: list[str] = Field(default_factory=list, description="已确定的竞品名称列表")
     insufficient_evidence_competitors: list[str] = Field(default_factory=list, description="允许证据不足但继续分析的竞品")
+    memory_enabled: bool = Field(default=True, description="是否启用 V2 memory context 注入")
+    rag_enabled: bool = Field(default=True, description="是否启用 V2 retrieval context 注入")
     language: str = Field(default="zh", description="报告语言")
     extra_requirements: str = Field(default="", description="用户额外需求")
 

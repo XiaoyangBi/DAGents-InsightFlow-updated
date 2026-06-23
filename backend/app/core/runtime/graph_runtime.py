@@ -32,6 +32,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.context.assembler import ContextAssembler
 from app.core.runtime.node_runner import NodeRunner
 from app.core.runtime.policies import DefaultRoutePolicy
 from app.core.runtime.template import GraphTemplate, NodeSpec
@@ -70,6 +71,7 @@ class GraphRuntime:
         thread_id: str,
         event_logger: EventLogger,
         checkpointer=None,
+        context_assembler: ContextAssembler | None = None,
     ):
         self.template = template
         self.db = db
@@ -79,6 +81,7 @@ class GraphRuntime:
         self.thread_id = thread_id
         self.event_logger = event_logger
         self.checkpointer = checkpointer
+        self.context_assembler = context_assembler or ContextAssembler()
 
     @property
     def config(self) -> dict:
@@ -139,6 +142,7 @@ class GraphRuntime:
             self.run_id,
             self.execution_attempt,
             self.event_logger,
+            context_assembler=self.context_assembler,
         )
 
         for spec in self.template.nodes:

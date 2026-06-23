@@ -43,8 +43,18 @@ function formatEventMessage(e: WorkflowEvent): string {
       return String(payload?.message || "Node progress");
     case "node_complete":
       return `Completed in ${payload?.duration_ms || "?"}ms`;
-    case "node_error":
-      return `ERROR: ${payload?.error_message || ""}`;
+    case "node_error": {
+      const errorCode = String(payload?.error_code || "");
+      const errorMessage = String(payload?.error_message || "").trim();
+      const retryCount = Number(payload?.retry_count || 0);
+      const maxRetries = Number(payload?.max_retries || 0);
+      if (errorCode === "TimeoutError") {
+        return retryCount > 0 && maxRetries > 0 && retryCount < maxRetries
+          ? `TIMEOUT: retry ${retryCount + 1}/${maxRetries}`
+          : "TIMEOUT";
+      }
+      return `ERROR: ${errorMessage || errorCode || "unknown"}`;
+    }
     case "tool_call":
       return `Call ${payload?.tool || "tool"}`;
     case "tool_result":

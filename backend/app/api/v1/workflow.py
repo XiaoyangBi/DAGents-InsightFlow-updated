@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, status
+from fastapi import APIRouter, Body, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_async_session
 from app.dependencies import get_current_user
@@ -14,6 +14,7 @@ from app.core.workflow_executor import run_workflow, resume_workflow, recover_wo
 from app.exceptions import WorkflowNotFoundError, InvalidStateTransitionError
 from app.db.models.workflow_run import WorkflowRun
 from app.db.models.workflow_pause import WorkflowPause
+from app.services.task_runner import launch_detached_task
 from sqlalchemy import select
 from datetime import datetime, timezone
 
@@ -71,7 +72,6 @@ async def get_workflow_detail(
 @router.post("/{workflow_id}/start")
 async def start_workflow_endpoint(
     workflow_id: str,
-    background_tasks: BackgroundTasks,
     override_config: WorkflowConfig | None = Body(default=None),
     current_user: UserResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
@@ -82,7 +82,7 @@ async def start_workflow_endpoint(
     使右侧面板用户编辑成为权威配置（覆盖 LLM 未提取或提取错误的字段）。
     """
     workflow = await start_workflow(db, workflow_id, current_user.id, override_config)
-    background_tasks.add_task(run_workflow, workflow.id, db.bind)
+    launch_detached_task(run_workflow(workflow.id, db.bind), label=f"workflow:start:{workflow.id}")
     return {"workflow_id": str(workflow.id), "status": workflow.status}
 
 
@@ -95,6 +95,35 @@ async def update_workflow_endpoint(
 ):
     workflow = await update_workflow_title(db, workflow_id, current_user.id, body.title)
     return {"workflow_id": str(workflow.id), "title": workflow.title, "status": workflow.status}
+
+
+@router.post("/{workflow_id}/cancel")
+async def cancel_workflow_endpoint(
+    workflow_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    workflow = await cancel_workflow(db, workflow_id, current_user.id)
+    run = await db.get(WorkflowRun, workflow.current_run_id) if workflow.current_run_id else None
+    await _resolve_current_pauses(
+        db,
+        workflow.id,
+        run.id if run else None,
+        {"action": "abort", "source": "cancel_endpoint"},
+    )
+    event_logger = EventLogger(db, workflow.id, workflow.execution_attempt, run_id=run.id if run else None)
+    await event_logger.log(
+        EventType.WORKFLOW_FAILED,
+        {"error_code": "USER_CANCELLED", "error_message": "用户手动停止生成"},
+        node_name="__workflow__",
+    )
+    await sse_manager.broadcast(workflow.id, {
+        "event_type": EventType.WORKFLOW_FAILED.value,
+        "error_code": "USER_CANCELLED",
+        "error_message": "用户手动停止生成",
+    })
+    await sse_manager.close_workflow(workflow.id)
+    return {"workflow_id": str(workflow.id), "status": workflow.status, "action": "cancel"}
 
 
 @router.delete("/{workflow_id}")
@@ -117,13 +146,12 @@ async def delete_workflow_endpoint(
 async def retry_node_endpoint(
     workflow_id: str,
     node_name: str,
-    background_tasks: BackgroundTasks,
     current_user: UserResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
     """重试失败的工作流，从零开始重新执行。"""
     workflow = await restart_workflow(db, workflow_id, current_user.id)
-    background_tasks.add_task(run_workflow, workflow.id, db.bind)
+    launch_detached_task(run_workflow(workflow.id, db.bind), label=f"workflow:retry:{workflow.id}")
     return {
         "workflow_id": str(workflow.id),
         "status": "running",
@@ -135,7 +163,6 @@ async def retry_node_endpoint(
 @router.post("/{workflow_id}/recover")
 async def recover_workflow_endpoint(
     workflow_id: str,
-    background_tasks: BackgroundTasks,
     current_user: UserResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
@@ -145,7 +172,7 @@ async def recover_workflow_endpoint(
         raise WorkflowNotFoundError(workflow_id)
     if workflow.status != "running":
         raise InvalidStateTransitionError(workflow_id, workflow.status, "recover")
-    background_tasks.add_task(recover_workflow, workflow.id, db.bind)
+    launch_detached_task(recover_workflow(workflow.id, db.bind), label=f"workflow:recover:{workflow.id}")
     return {"workflow_id": str(workflow.id), "status": "running", "action": "recover"}
 
 
@@ -153,7 +180,6 @@ async def recover_workflow_endpoint(
 async def human_decide(
     workflow_id: str,
     decision: DecisionRequest,
-    background_tasks: BackgroundTasks,
     current_user: UserResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
@@ -218,7 +244,10 @@ async def human_decide(
         return {"workflow_id": str(workflow.id), "status": "cancelled", "action": "abort"}
 
     # jump: 启动后台恢复任务
-    background_tasks.add_task(resume_workflow, workflow.id, decision, db.bind)
+    launch_detached_task(
+        resume_workflow(workflow.id, decision, db.bind),
+        label=f"workflow:resume:{workflow.id}",
+    )
     return {
         "workflow_id": str(workflow.id),
         "status": "running",
