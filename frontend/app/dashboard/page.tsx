@@ -13,7 +13,7 @@ import { WorkflowCard } from "@/components/dashboard/workflow-card";
 import { BentoGrid } from "@/components/dashboard/bento-grid";
 import { EmptyState } from "@/components/shared/empty-state";
 import Link from "next/link";
-import { Plus, LogOut, Settings, Search } from "lucide-react";
+import { Plus, LogOut, Settings, Search, Brain } from "lucide-react";
 import type { WorkflowStatus } from "@/types/workflow";
 
 const STATUS_FILTERS: Array<{ label: string; value: WorkflowStatus | "all" }> = [
@@ -89,6 +89,12 @@ export default function DashboardPage() {
               >
                 {creating ? <Spinner size={12} /> : <Plus size={14} />} 新建分析
               </Button>
+              <Link
+                href="/memory"
+                className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] shadow-sm hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+              >
+                <Brain size={14} /> 记忆中心
+              </Link>
               <Link href="/settings" className="rounded-xl border border-transparent p-2 text-[var(--text-muted)] hover:border-[var(--border)] hover:bg-[var(--bg-card)] hover:text-[var(--text-primary)]">
                 <Settings size={14} />
               </Link>

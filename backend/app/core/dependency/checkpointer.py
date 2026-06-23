@@ -36,9 +36,10 @@ async def init_checkpointer() -> None:
     global _saver, _conn
 
     settings = get_settings()
+    sync_database_url = settings.database_url_sync
     if not (
-        settings.DATABASE_URL_SYNC.startswith("postgresql://")
-        or settings.DATABASE_URL_SYNC.startswith("postgres://")
+        sync_database_url.startswith("postgresql://")
+        or sync_database_url.startswith("postgres://")
     ):
         _saver = None
         _conn = None
@@ -55,7 +56,7 @@ async def init_checkpointer() -> None:
     except Exception as exc:
         raise RuntimeError("langgraph-checkpoint-postgres is required to initialize the Postgres checkpointer") from exc
     _conn = await psycopg.AsyncConnection.connect(
-        settings.DATABASE_URL_SYNC,
+        sync_database_url,
         autocommit=True,
         prepare_threshold=0,
         row_factory=dict_row,

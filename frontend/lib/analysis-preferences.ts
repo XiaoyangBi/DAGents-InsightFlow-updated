@@ -1,5 +1,31 @@
 import type { WorkflowConfig } from "@/types/workflow";
 
+export type ModelProvider =
+  | "OpenAI"
+  | "Anthropic"
+  | "DeepSeek"
+  | "Google"
+  | "MiniMax"
+  | "Moonshot"
+  | "OpenRouter"
+  | "OpenAI Compatible";
+
+export type BuiltinModelOption = {
+  id: string;
+  label: string;
+  provider: ModelProvider;
+  model: string;
+  badge?: string;
+};
+
+export type CustomModelConfig = {
+  id: string;
+  provider: ModelProvider;
+  model: string;
+  apiKey: string;
+  baseUrl?: string;
+};
+
 export type AnalysisPreferences = {
   reportLanguage: "中文" | "英文";
   analysisDepth: "快速" | "标准" | "深入";
@@ -9,7 +35,8 @@ export type AnalysisPreferences = {
 };
 
 export type ModelDataSettings = {
-  defaultModel: "deepseek-v4-pro" | "gpt-4.1" | "claude-sonnet-4";
+  defaultModel: string;
+  customModels: CustomModelConfig[];
   webResearchEnabled: boolean;
   citationMode: "always" | "smart" | "off";
   retainLongTermMemory: boolean;
@@ -29,8 +56,19 @@ export const DEFAULT_ANALYSIS_PREFERENCES: AnalysisPreferences = {
   reportStyle: "结构化研究型",
 };
 
+export const BUILTIN_MODEL_OPTIONS: BuiltinModelOption[] = [
+  { id: "builtin:deepseek-v4-pro", label: "deepseek-v4-pro", provider: "DeepSeek", model: "deepseek-v4-pro" },
+  { id: "builtin:gpt-5.4", label: "gpt-5.4", provider: "OpenAI", model: "gpt-5.4" },
+  { id: "builtin:gpt-5.2", label: "gpt-5.2", provider: "OpenAI", model: "gpt-5.2" },
+  { id: "builtin:minimax-m2.7", label: "MiniMax-M2.7", provider: "MiniMax", model: "MiniMax-M2.7" },
+  { id: "builtin:kimi-k2.5", label: "kimi-k2.5", provider: "Moonshot", model: "kimi-k2.5" },
+  { id: "builtin:gemini-3.1-pro-preview", label: "gemini-3.1-pro-preview", provider: "Google", model: "gemini-3.1-pro-preview" },
+  { id: "builtin:gemini-3-flash-preview", label: "gemini-3-flash-preview", provider: "Google", model: "gemini-3-flash-preview" },
+];
+
 export const DEFAULT_MODEL_DATA_SETTINGS: ModelDataSettings = {
-  defaultModel: "deepseek-v4-pro",
+  defaultModel: BUILTIN_MODEL_OPTIONS[0].id,
+  customModels: [],
   webResearchEnabled: true,
   citationMode: "smart",
   retainLongTermMemory: true,
@@ -43,6 +81,55 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 };
 
 const APP_SETTINGS_STORAGE_KEY = "insightflow_app_settings";
+
+function normalizeDefaultModelId(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) {
+    return DEFAULT_MODEL_DATA_SETTINGS.defaultModel;
+  }
+
+  const builtinMatch = BUILTIN_MODEL_OPTIONS.find(
+    (option) => option.id === value || option.model === value || option.label === value,
+  );
+  if (builtinMatch) {
+    return builtinMatch.id;
+  }
+
+  if (value === "gpt-4.1" || value === "builtin:gpt-4.1") {
+    return "builtin:gpt-5.4";
+  }
+  if (value === "claude-sonnet-4" || value === "builtin:claude-sonnet-4") {
+    return DEFAULT_MODEL_DATA_SETTINGS.defaultModel;
+  }
+  if (value === "gpt-5.4" || value === "builtin:gpt-5.4-beta") {
+    return "builtin:gpt-5.4";
+  }
+  if (value === "minimax-m2.7") {
+    return "builtin:minimax-m2.7";
+  }
+  if (value.startsWith("builtin:")) {
+    return DEFAULT_MODEL_DATA_SETTINGS.defaultModel;
+  }
+
+  return value;
+}
+
+function normalizeCustomModels(value: unknown): CustomModelConfig[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .filter((item): item is Partial<CustomModelConfig> => Boolean(item) && typeof item === "object")
+    .map((item, index) => ({
+      id: typeof item.id === "string" && item.id ? item.id : `custom-${index}`,
+      provider:
+        typeof item.provider === "string" && item.provider
+          ? (item.provider as ModelProvider)
+          : "OpenAI Compatible",
+      model: typeof item.model === "string" ? item.model.trim() : "",
+      apiKey: typeof item.apiKey === "string" ? item.apiKey : "",
+      baseUrl: typeof item.baseUrl === "string" ? item.baseUrl.trim() : "",
+    }))
+    .filter((item) => Boolean(item.model));
+}
 
 export function readAppSettings(): AppSettings {
   if (typeof window === "undefined") return DEFAULT_APP_SETTINGS;
@@ -58,6 +145,8 @@ export function readAppSettings(): AppSettings {
       modelDataSettings: {
         ...DEFAULT_MODEL_DATA_SETTINGS,
         ...(parsed.modelDataSettings ?? {}),
+        defaultModel: normalizeDefaultModelId(parsed.modelDataSettings?.defaultModel),
+        customModels: normalizeCustomModels(parsed.modelDataSettings?.customModels),
       },
     };
   } catch {
@@ -86,6 +175,19 @@ export function readModelDataSettings(): ModelDataSettings {
 export function writeModelDataSettings(settings: ModelDataSettings) {
   const current = readAppSettings();
   writeAppSettings({ ...current, modelDataSettings: settings });
+}
+
+export function getAllModelOptions(settings: ModelDataSettings) {
+  return [
+    ...BUILTIN_MODEL_OPTIONS,
+    ...settings.customModels.map((model) => ({
+      id: model.id,
+      label: model.model,
+      provider: model.provider,
+      model: model.model,
+      badge: "自定义",
+    })),
+  ];
 }
 
 function focusDimensionsFor(outputFocus: AnalysisPreferences["outputFocus"]): string[] {

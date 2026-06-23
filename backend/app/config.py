@@ -1,9 +1,27 @@
-from pathlib import Path
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 BACKEND_ROOT = Path(__file__).parent.parent
+
+
+def _normalize_sync_database_url(url: str) -> str:
+    """将 Railway 常见的 postgres:// 连接串规范化为 SQLAlchemy 可识别格式。"""
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql://", 1)
+    return url
+
+
+def _normalize_async_database_url(url: str) -> str:
+    """将标准 PostgreSQL URL 转为 asyncpg 异步驱动格式。"""
+    normalized = _normalize_sync_database_url(url)
+    if normalized.startswith("postgresql+asyncpg://"):
+        return normalized
+    if normalized.startswith("postgresql://"):
+        return normalized.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return normalized
 
 
 class Settings(BaseSettings):
@@ -46,6 +64,16 @@ class Settings(BaseSettings):
     def langsmith_enabled(self) -> bool:
         """便捷判断：是否已启用 LangSmith 追踪。"""
         return self.LANGSMITH_TRACING_V2 and bool(self.LANGSMITH_API_KEY)
+
+    @property
+    def database_url_async(self) -> str:
+        """返回兼容 Railway 默认变量格式的异步数据库连接串。"""
+        return _normalize_async_database_url(self.DATABASE_URL)
+
+    @property
+    def database_url_sync(self) -> str:
+        """返回规范化后的同步数据库连接串。"""
+        return _normalize_sync_database_url(self.DATABASE_URL_SYNC)
 
     model_config = SettingsConfigDict(env_file=BACKEND_ROOT / ".env", extra="ignore")
 

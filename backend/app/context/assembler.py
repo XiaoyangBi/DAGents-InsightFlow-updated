@@ -37,8 +37,18 @@ class ContextAssembler:
         config = state.get("config") if isinstance(state.get("config"), dict) else {}
         memory_enabled = config.get("memory_enabled", True)
         rag_enabled = config.get("rag_enabled", True)
-        memory_query = self._build_memory_query(config=config, node_id=node_id, iteration=iteration)
-        retrieval_query = self._build_retrieval_query(config=config, node_id=node_id, iteration=iteration)
+        memory_query = self._build_memory_query(
+            config=config,
+            workflow_id=workflow_id,
+            node_id=node_id,
+            iteration=iteration,
+        )
+        retrieval_query = self._build_retrieval_query(
+            config=config,
+            workflow_id=workflow_id,
+            node_id=node_id,
+            iteration=iteration,
+        )
 
         recalled = await self.memory_backend.recall(memory_query) if memory_enabled else []
         retrieved = await self.retriever_backend.retrieve(retrieval_query) if rag_enabled else []
@@ -77,10 +87,12 @@ class ContextAssembler:
         return {
             "user_profile": existing.get("user_profile") or {},
             "product_profile": existing.get("product_profile") or {
+                "active_product_id": config.get("active_product_id", ""),
                 "target_product": config.get("target_product", ""),
                 "product_category": config.get("product_category", ""),
             },
             "active_thread": existing.get("active_thread") or {
+                "research_thread_id": config.get("research_thread_id", ""),
                 "focus_dimensions": list(config.get("focus_dimensions") or []),
                 "extra_requirements": config.get("extra_requirements", ""),
             },
@@ -97,18 +109,35 @@ class ContextAssembler:
         }
 
     @staticmethod
-    def _build_memory_query(*, config: dict, node_id: str, iteration: int) -> dict:
+    def _build_memory_query(
+        *,
+        config: dict,
+        workflow_id: uuid.UUID,
+        node_id: str,
+        iteration: int,
+    ) -> dict:
         return {
+            "owner_id": config.get("owner_id", ""),
+            "workflow_id": str(workflow_id),
             "topic": config.get("target_product", ""),
             "node_id": node_id,
+            "active_product_id": config.get("active_product_id", ""),
+            "research_thread_id": config.get("research_thread_id", ""),
             "focus_dimensions": list(config.get("focus_dimensions") or []),
             "iteration": iteration,
         }
 
     @staticmethod
-    def _build_retrieval_query(*, config: dict, node_id: str, iteration: int) -> dict:
+    def _build_retrieval_query(
+        *,
+        config: dict,
+        workflow_id: uuid.UUID,
+        node_id: str,
+        iteration: int,
+    ) -> dict:
         return {
             "query": config.get("target_product", ""),
+            "workflow_id": str(workflow_id),
             "node_id": node_id,
             "focus_dimensions": list(config.get("focus_dimensions") or []),
             "iteration": iteration,
